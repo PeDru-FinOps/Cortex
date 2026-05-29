@@ -68,6 +68,7 @@
     <div id="tree-context-menu" class="tree-context-menu" hidden>
       <button type="button" data-tree-action="new-note">Nova nota</button>
       <button type="button" data-tree-action="new-folder">Nova pasta</button>
+      <button type="button" data-tree-action="rename-note">Renomear nota</button>
       <button type="button" data-tree-action="copy-note">Copiar nota</button>
       <button type="button" data-tree-action="delete-note">Apagar nota</button>
       <button type="button" data-tree-action="delete-folder">Apagar pasta</button>
@@ -92,12 +93,7 @@
             <input name="path" placeholder="pasta/subpasta/minha-nota.md" value="{{ selected_note.path if selected_note else selected_path }}" required>
             <button type="submit">Salvar</button>
           </div>
-          <input name="tags" list="tag-options" placeholder="#tags adicionais, separadas por espaco ou virgula">
-          <datalist id="tag-options">
-            {% for tag in all_tags or [] %}
-              <option value="#{{ tag }}"></option>
-            {% endfor %}
-          </datalist>
+          <input name="tags" data-tag-autocomplete placeholder="#tags adicionais, separadas por espaco ou virgula">
           {% if error %}
             <p class="error">{{ error }}</p>
           {% endif %}
@@ -112,6 +108,7 @@
           </div>
           {% if selected_note %}
             <div class="note-actions">
+              <button class="secondary-button" type="button" data-rename-current-note data-note-path="{{ selected_note.path }}">Renomear</button>
               <a class="action-link" href="{{ url_for('index', path=selected_note.path, mode='edit') }}">Editar</a>
               <form method="post" action="{{ url_for('delete_note') }}" data-confirm="Excluir esta nota?">
                 <input type="hidden" name="path" value="{{ selected_note.path }}">

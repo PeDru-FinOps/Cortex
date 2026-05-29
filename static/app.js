@@ -3,6 +3,8 @@ const views = document.querySelectorAll(".view");
 const appShell = document.querySelector(".app-shell");
 
 setupSidebar();
+setupRenameCurrentNote();
+setupTagAutocomplete();
 setupTreeContextMenu();
 setupTreeDragAndDrop();
 setupConfirmForms();
@@ -202,6 +204,11 @@ function setupTreeContextMenu() {
       return;
     }
 
+    if (action === "rename-note") {
+      await renameNote(target.path);
+      return;
+    }
+
     if (action === "delete-note") {
       if (!window.confirm(`Apagar nota ${target.path}?`)) return;
       await postTreeAction("/notes/delete", { path: target.path }, () => {
@@ -219,6 +226,76 @@ function setupTreeContextMenu() {
   });
 }
 
+let cortexTags = null;
+
+function setupTagAutocomplete() {
+  document.querySelectorAll("[data-tag-autocomplete]").forEach((input) => {
+    const box = document.createElement("div");
+    box.className = "tag-autocomplete";
+    box.hidden = true;
+    input.insertAdjacentElement("afterend", box);
+
+    input.addEventListener("input", async () => {
+      const tags = await loadCortexTags();
+      const current = currentTagToken(input.value);
+      if (!current.query) {
+        box.hidden = true;
+        return;
+      }
+      const matches = tags
+        .filter((tag) => tag.startsWith(current.query) && !current.existing.has(tag))
+        .slice(0, 8);
+      if (!matches.length) {
+        box.hidden = true;
+        return;
+      }
+      box.innerHTML = matches.map((tag) => `<button type="button" data-tag-suggestion="${escapeHtml(tag)}">#${escapeHtml(tag)}</button>`).join("");
+      box.hidden = false;
+    });
+
+    input.addEventListener("blur", () => {
+      window.setTimeout(() => {
+        box.hidden = true;
+      }, 120);
+    });
+
+    box.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-tag-suggestion]");
+      if (!button) return;
+      input.value = replaceCurrentTagToken(input.value, button.dataset.tagSuggestion);
+      box.hidden = true;
+      input.focus();
+    });
+  });
+}
+
+async function loadCortexTags() {
+  if (cortexTags) return cortexTags;
+  try {
+    const response = await fetch("/api/tags");
+    const data = await response.json();
+    cortexTags = data.tags || [];
+  } catch {
+    cortexTags = [];
+  }
+  return cortexTags;
+}
+
+function currentTagToken(value) {
+  const beforeCursor = value;
+  const match = beforeCursor.match(/(^|[\s,])#?([A-Za-z0-9_\-/]*)$/);
+  const existing = new Set(value.split(/[\s,]+/).map((tag) => tag.replace(/^#/, "").toLowerCase()).filter(Boolean));
+  return {
+    query: match ? match[2].toLowerCase() : "",
+    existing,
+  };
+}
+
+function replaceCurrentTagToken(value, tag) {
+  const suffix = value.endsWith(" ") ? "" : " ";
+  return value.replace(/(^|[\s,])#?[A-Za-z0-9_\-/]*$/, `$1#${tag}${suffix}`);
+}
+
 function treeTargetFromElement(item) {
   if (item.dataset.treeType === "folder") {
     return { type: "folder", path: item.dataset.folderPath || "" };
@@ -228,6 +305,7 @@ function treeTargetFromElement(item) {
 
 function showTreeMenu(menu, target, x, y) {
   menu.querySelector('[data-tree-action="copy-note"]').hidden = target.type !== "note";
+  menu.querySelector('[data-tree-action="rename-note"]').hidden = target.type !== "note";
   menu.querySelector('[data-tree-action="delete-note"]').hidden = target.type !== "note";
   menu.querySelector('[data-tree-action="delete-folder"]').hidden = target.type !== "folder" || !target.path;
   menu.style.left = `${Math.min(x, window.innerWidth - 210)}px`;
@@ -261,6 +339,22 @@ function parentFolder(path) {
   const parts = String(path || "").split("/");
   parts.pop();
   return parts.join("/");
+}
+
+function setupRenameCurrentNote() {
+  document.querySelector("[data-rename-current-note]")?.addEventListener("click", async (event) => {
+    await renameNote(event.currentTarget.dataset.notePath || "");
+  });
+}
+
+async function renameNote(path) {
+  if (!path) return;
+  const currentName = path.split("/").pop();
+  const newName = prompt("Novo nome da nota", currentName);
+  if (!newName || newName === currentName) return;
+  await postTreeAction("/notes/rename", { path, new_name: newName }, (data) => {
+    window.location.href = `/?path=${encodeURIComponent(data.path)}&mode=read`;
+  });
 }
 
 function setupIntelligence() {
@@ -364,6 +458,7 @@ function setupIntelligence() {
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || "Nao foi possivel gerar o texto.");
         await watchWritingJob(data.job_id, writingResult);
+        setupTagAutocomplete();
       } catch (error) {
         writingResult.innerHTML = `<p class="error">${escapeHtml(error.message)}</p>`;
       } finally {
@@ -691,10 +786,7 @@ function renderWritingTagEditor(items) {
   return `
     <section class="writing-tags">
       <label for="writing-tags-input">Tags aprovadas</label>
-      <input id="writing-tags-input" list="writing-tag-options" value="${escapeHtml(tags)}" placeholder="#finops #azure">
-      <datalist id="writing-tag-options">
-        ${items.map((item) => `<option value="#${escapeHtml(item.tag)}"></option>`).join("")}
-      </datalist>
+      <input id="writing-tags-input" data-tag-autocomplete value="${escapeHtml(tags)}" placeholder="#finops #azure">
       ${items.length ? `
         <div class="suggested-tag-list">
           ${items.map((item) => `<button class="secondary-button" type="button" data-add-writing-tag="${escapeHtml(item.tag)}">#${escapeHtml(item.tag)}</button>`).join("")}

@@ -78,6 +78,43 @@ class RepositoryTest(unittest.TestCase):
             self.assertEqual(moved, "destino/nota.md")
             self.assertEqual(repository.read_note(moved)["content"], "# Nota")
 
+    def test_rename_note_keeps_same_folder(self):
+        with tempfile.TemporaryDirectory() as folder:
+            repository = NoteRepository(folder)
+            repository.write_note("origem/nota.md", "# Nota")
+
+            renamed = repository.rename_note("origem/nota.md", "novo-nome")
+
+            self.assertEqual(renamed, "origem/novo-nome.md")
+            self.assertEqual(repository.read_note(renamed)["content"], "# Nota")
+            with self.assertRaises(RepositoryError):
+                repository.read_note("origem/nota.md")
+
+    def test_rename_note_rejects_folder_in_new_name(self):
+        with tempfile.TemporaryDirectory() as folder:
+            repository = NoteRepository(folder)
+            repository.write_note("origem/nota.md", "# Nota")
+
+            with self.assertRaises(RepositoryError):
+                repository.rename_note("origem/nota.md", "outra/pasta.md")
+
+    def test_rename_note_updates_wiki_links(self):
+        with tempfile.TemporaryDirectory() as folder:
+            repository = NoteRepository(folder)
+            repository.write_note("origem/nota.md", "# Nota")
+            repository.write_note(
+                "links.md",
+                "[[nota]]\n[[origem/nota]]\n[[origem/nota.md]]\n[[nota|alias preservado]]",
+            )
+
+            repository.rename_note("origem/nota.md", "novo-nome")
+            content = repository.read_note("links.md")["content"]
+
+            self.assertIn("[[novo-nome]]", content)
+            self.assertIn("[[origem/novo-nome]]", content)
+            self.assertIn("[[origem/novo-nome.md]]", content)
+            self.assertIn("[[novo-nome|alias preservado]]", content)
+
     def test_delete_note(self):
         with tempfile.TemporaryDirectory() as folder:
             repository = NoteRepository(folder)

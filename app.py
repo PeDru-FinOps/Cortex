@@ -166,6 +166,19 @@ def copy_note():
     return jsonify({"ok": True, "path": copied_path})
 
 
+@app.post("/notes/rename")
+@login_required
+def rename_note():
+    payload = request.get_json(silent=True) or {}
+    path = str(payload.get("path", "")).strip()
+    new_name = str(payload.get("new_name", "")).strip()
+    try:
+        renamed_path = repository.rename_note(path, new_name)
+    except RepositoryError as error:
+        return jsonify({"ok": False, "error": str(error)}), 400
+    return jsonify({"ok": True, "path": renamed_path})
+
+
 @app.post("/notes/move")
 @login_required
 def move_note():

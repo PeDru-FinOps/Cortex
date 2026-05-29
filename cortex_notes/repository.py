@@ -88,6 +88,44 @@ class NoteRepository:
         source.replace(destination)
         return self.to_relative(destination)
 
+    def rename_note(self, relative_path: str, new_name: str) -> str:
+        source = self.resolve_note_path(relative_path)
+        if not source.exists() or not source.is_file():
+            raise RepositoryError("Nota de origem nao encontrada.")
+        old_relative = self.to_relative(source)
+        old_stem = source.stem
+        normalized_name = new_name.strip().replace("\\", "/")
+        if not normalized_name or "/" in normalized_name or Path(normalized_name).drive or ".." in Path(normalized_name).parts:
+            raise RepositoryError("Informe apenas o novo nome da nota, sem pasta.")
+        if not normalized_name.lower().endswith(".md"):
+            normalized_name = f"{normalized_name}.md"
+        destination = (source.parent / normalized_name).resolve()
+        if self.root != destination and self.root not in destination.parents:
+            raise RepositoryError("Destino fora do repositorio de notas.")
+        if destination.exists() and destination != source:
+            raise RepositoryError("Ja existe uma nota com esse nome.")
+        source.replace(destination)
+        new_relative = self.to_relative(destination)
+        self.update_links_after_rename(old_relative, new_relative, old_stem, destination.stem)
+        return new_relative
+
+    def update_links_after_rename(self, old_path: str, new_path: str, old_title: str, new_title: str) -> int:
+        changed = 0
+        old_path_without_suffix = str(Path(old_path).with_suffix("")).replace("\\", "/")
+        new_path_without_suffix = str(Path(new_path).with_suffix("")).replace("\\", "/")
+        replacements = {
+            old_path: new_path,
+            old_path_without_suffix: new_path_without_suffix,
+            old_title: new_title,
+        }
+        for note_path in self.iter_notes():
+            content = note_path.read_text(encoding="utf-8")
+            updated = replace_wiki_link_targets(content, replacements)
+            if updated != content:
+                note_path.write_text(updated, encoding="utf-8")
+                changed += 1
+        return changed
+
     def delete_note(self, relative_path: str) -> None:
         path = self.resolve_note_path(relative_path)
         if not path.exists() or not path.is_file():
@@ -291,6 +329,21 @@ def next_copy_path(source: Path) -> Path:
         candidate = source.with_name(f"{stem} - copia {counter}{suffix}")
         counter += 1
     return candidate
+
+
+def replace_wiki_link_targets(content: str, replacements: dict[str, str]) -> str:
+    def replace(match: re.Match) -> str:
+        raw_target = match.group(1)
+        target, separator, alias = raw_target.partition("|")
+        stripped = target.strip()
+        replacement = replacements.get(stripped)
+        if not replacement:
+            return match.group(0)
+        if separator:
+            return f"[[{replacement}|{alias}]]"
+        return f"[[{replacement}]]"
+
+    return re.sub(r"\[\[([^\]]+)\]\]", replace, content)
 
 
 def normalize_tags(tags: list[str]) -> list[str]:

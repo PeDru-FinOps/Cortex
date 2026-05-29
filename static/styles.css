@@ -1196,6 +1196,33 @@ textarea {
   gap: 10px;
 }
 
+.tag-autocomplete {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: -4px;
+  padding: 8px;
+  position: relative;
+  z-index: 12;
+}
+
+.tag-autocomplete[hidden] {
+  display: none;
+}
+
+.tag-autocomplete button {
+  background: rgb(34 211 238 / 12%);
+  border: 1px solid rgb(34 211 238 / 24%);
+  box-shadow: none;
+  color: var(--aqua);
+  min-height: 30px;
+  padding: 0 10px;
+}
+
 .tag-suggestion-panel h3 {
   font-size: 15px;
   margin: 0;
