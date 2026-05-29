@@ -1,0 +1,145 @@
+{% extends "base.html" %}
+
+{% macro render_tree(node, selected_path) %}
+  {% if node.type == "folder" %}
+    <li>
+      <details class="folder-node" data-folder-path="{{ node.path }}" {{ 'open' if node.path == "" or (selected_path and node.path and selected_path.startswith(node.path ~ '/')) else '' }}>
+        <summary class="folder-drop-target" data-folder-path="{{ node.path }}">{{ node.name }}</summary>
+        <ul>
+          {% for child in node.children %}
+            {{ render_tree(child, selected_path) }}
+          {% endfor %}
+        </ul>
+      </details>
+    </li>
+  {% else %}
+    <li>
+      <a class="{{ 'active' if node.path == selected_path else '' }} note-link" draggable="true" data-note-path="{{ node.path }}" href="{{ url_for('index', path=node.path, mode='read') }}">{{ node.name }}</a>
+    </li>
+  {% endif %}
+{% endmacro %}
+
+{% block body %}
+<div class="app-shell">
+  <aside class="sidebar">
+    <div class="brand-row">
+      <h1>Cortex</h1>
+      <div class="brand-actions">
+        <button class="sidebar-toggle" type="button" title="Ocultar sidebar" aria-label="Ocultar sidebar">Menu</button>
+        <form method="post" action="{{ url_for('logout') }}">
+          <button class="icon-button" type="submit" title="Sair">Sair</button>
+        </form>
+      </div>
+    </div>
+    <div class="sidebar-actions">
+      <a class="action-link" href="{{ url_for('index', mode='new') }}">Nova nota</a>
+      <form class="folder-form" method="post" action="{{ url_for('create_folder') }}">
+        <input name="path" placeholder="Nova pasta/subpasta" required>
+        <button type="submit">Criar pasta</button>
+      </form>
+      {% if folder_error %}
+        <p class="error">{{ folder_error }}</p>
+      {% endif %}
+      <section class="dropzone" data-upload-url="{{ url_for('upload_notes') }}">
+        <input id="upload-files" type="file" accept=".md,text/markdown" multiple hidden>
+        <input id="upload-folder" type="file" accept=".md,text/markdown" multiple webkitdirectory directory hidden>
+        <div class="dropzone-icon">+</div>
+        <p>Arraste arquivos aqui</p>
+        <span>Markdown, pastas e subpastas</span>
+        <div class="dropzone-actions">
+          <button type="button" data-upload-picker="files">Arquivos</button>
+          <button type="button" data-upload-picker="folder">Pasta</button>
+        </div>
+      </section>
+      {% if uploaded %}
+        <p class="success">{{ uploaded }} arquivo(s) importado(s).</p>
+      {% endif %}
+      {% if upload_error %}
+        <p class="error">{{ upload_error }}</p>
+      {% endif %}
+    </div>
+    <nav class="tree">
+      <ul>{{ render_tree(tree, selected_path) }}</ul>
+    </nav>
+    <div class="sidebar-resizer" role="separator" aria-orientation="vertical" title="Redimensionar sidebar"></div>
+  </aside>
+
+  <main class="workspace">
+    <button class="sidebar-toggle floating-sidebar-toggle" type="button" title="Exibir sidebar" aria-label="Exibir sidebar">Menu</button>
+    {% if mode in ["edit", "new"] %}
+      <section class="content-pane">
+        <div class="content-header">
+          <div class="note-heading">
+            <span>{{ selected_note.path if selected_note else "Nova nota" }}</span>
+          </div>
+          {% if selected_note %}
+            <a class="action-link" href="{{ url_for('index', path=selected_note.path, mode='read') }}">Leitura</a>
+          {% endif %}
+        </div>
+        <form method="post" action="{{ url_for('save_note') }}">
+          <div class="toolbar">
+            <input name="path" placeholder="pasta/subpasta/minha-nota.md" value="{{ selected_note.path if selected_note else selected_path }}" required>
+            <button type="submit">Salvar</button>
+          </div>
+          {% if error %}
+            <p class="error">{{ error }}</p>
+          {% endif %}
+          <textarea name="content" spellcheck="false" placeholder="# Nova nota&#10;&#10;Escreva em Markdown e use #tags para conectar ideias.">{{ selected_note.content if selected_note else '' }}</textarea>
+        </form>
+      </section>
+    {% else %}
+      <section class="content-pane">
+        <div class="content-header">
+          <div class="note-heading">
+            <span>{{ selected_note.path if selected_note else "Nenhuma nota selecionada" }}</span>
+          </div>
+          {% if selected_note %}
+            <div class="note-actions">
+              <a class="action-link" href="{{ url_for('index', path=selected_note.path, mode='edit') }}">Editar</a>
+              <form method="post" action="{{ url_for('delete_note') }}" data-confirm="Excluir esta nota?">
+                <input type="hidden" name="path" value="{{ selected_note.path }}">
+                <button class="danger-button" type="submit">Excluir</button>
+              </form>
+            </div>
+          {% endif %}
+        </div>
+        <div class="tabs">
+          <button class="tab active" data-view="reading" type="button">Leitura</button>
+          <button class="tab" data-view="graph" type="button">Grafo</button>
+        </div>
+        <article id="reading" class="preview view active">
+          {% if selected_note %}
+            {{ preview_html|safe }}
+            <section class="local-graph">
+              <div class="local-graph-header">
+                <h2>Conexoes desta nota</h2>
+                <div class="local-graph-meta">
+                  <span class="local-graph-status">Carregando...</span>
+                  <div class="local-graph-controls">
+                    <button type="button" data-local-graph-zoom="in">+</button>
+                    <button type="button" data-local-graph-zoom="out">-</button>
+                    <button type="button" data-local-graph-zoom="reset">Reset</button>
+                  </div>
+                </div>
+              </div>
+              <canvas id="local-graph-canvas" data-note-path="{{ selected_note.path }}" aria-label="Grafo local da nota"></canvas>
+            </section>
+          {% else %}
+            <p>Selecione uma nota ou crie uma nova.</p>
+          {% endif %}
+        </article>
+        <div id="graph" class="graph view">
+          <div class="graph-status">Carregando grafo...</div>
+          <div class="graph-controls">
+            <button type="button" data-graph-zoom="in">+</button>
+            <button type="button" data-graph-zoom="out">-</button>
+            <button type="button" data-graph-zoom="reset">Reset</button>
+          </div>
+          <canvas id="graph-canvas" aria-label="Grafo de notas"></canvas>
+        </div>
+      </section>
+    {% endif %}
+  </main>
+</div>
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+{% endblock %}

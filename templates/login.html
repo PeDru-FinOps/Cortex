@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+
+{% block body %}
+<main class="login-shell">
+  <form class="login-panel" method="post" action="{{ url_for('login_post') }}">
+    <h1>Cortex</h1>
+    <label>
+      Usuario
+      <input name="username" autocomplete="username" required autofocus>
+    </label>
+    <label>
+      Senha
+      <input name="password" type="password" autocomplete="current-password" required>
+    </label>
+    {% if error %}
+      <p class="error">{{ error }}</p>
+    {% endif %}
+    <button type="submit">Entrar</button>
+  </form>
+</main>
+{% endblock %}

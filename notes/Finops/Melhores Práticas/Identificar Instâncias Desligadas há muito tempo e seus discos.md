@@ -1,0 +1,1 @@
+#aws #azure #gcp #oci #bestpractices #cloudcomputing #finops 
