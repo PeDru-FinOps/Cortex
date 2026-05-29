@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import shutil
 from pathlib import Path
 
 
@@ -93,6 +94,24 @@ class NoteRepository:
             raise RepositoryError("Nota nao encontrada.")
         path.unlink()
 
+    def delete_folder(self, relative_path: str) -> str:
+        path = self.resolve_folder_path(relative_path)
+        if path == self.root:
+            raise RepositoryError("Nao e possivel apagar a pasta raiz.")
+        if not path.exists() or not path.is_dir():
+            raise RepositoryError("Pasta nao encontrada.")
+        shutil.rmtree(path)
+        parent = path.parent
+        return "" if parent == self.root else self.to_relative(parent)
+
+    def copy_note(self, relative_path: str) -> str:
+        source = self.resolve_note_path(relative_path)
+        if not source.exists() or not source.is_file():
+            raise RepositoryError("Nota de origem nao encontrada.")
+        destination = next_copy_path(source)
+        destination.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+        return self.to_relative(destination)
+
     def append_note_link(self, source_path: str, target_path: str) -> dict[str, str | bool]:
         source = self.read_note(source_path)
         target = self.read_note(target_path)
@@ -114,6 +133,17 @@ class NoteRepository:
             "target": reciprocal,
             "changed": bool(forward["changed"] or reciprocal["changed"]),
         }
+
+    def append_tags(self, relative_path: str, tags: list[str]) -> dict:
+        note = self.read_note(relative_path)
+        normalized = normalize_tags(tags)
+        existing = extract_inline_tags(note["content"])
+        new_tags = [tag for tag in normalized if tag not in existing]
+        if not new_tags:
+            return {"path": note["path"], "tags": [], "changed": False}
+        content = append_tags_to_content(note["content"], new_tags)
+        self.write_note(note["path"], content)
+        return {"path": note["path"], "tags": new_tags, "changed": True}
 
     def import_note_stream(self, relative_path: str, stream) -> str:
         path = self.resolve_upload_path(relative_path)
@@ -250,3 +280,39 @@ def append_approved_connection_section(content: str, link: str) -> str:
 
     separator = "\n\n" if content.strip() else ""
     return f"{content.rstrip()}{separator}## Conexoes aprovadas\n\n- {link}\n"
+
+
+def next_copy_path(source: Path) -> Path:
+    stem = source.stem
+    suffix = source.suffix
+    candidate = source.with_name(f"{stem} - copia{suffix}")
+    counter = 2
+    while candidate.exists():
+        candidate = source.with_name(f"{stem} - copia {counter}{suffix}")
+        counter += 1
+    return candidate
+
+
+def normalize_tags(tags: list[str]) -> list[str]:
+    normalized = []
+    seen = set()
+    for tag in tags:
+        clean = str(tag).strip().lstrip("#").lower()
+        clean = re.sub(r"[^a-z0-9_\-/]+", "-", clean).strip("-")
+        if clean and clean not in seen:
+            seen.add(clean)
+            normalized.append(clean)
+    return normalized
+
+
+def extract_inline_tags(content: str) -> set[str]:
+    return {match.group(1).lower() for match in re.finditer(r"(?<!\w)#([A-Za-z0-9_\-/]+)", content)}
+
+
+def append_tags_to_content(content: str, tags: list[str]) -> str:
+    normalized = [tag for tag in normalize_tags(tags) if tag not in extract_inline_tags(content)]
+    if not normalized:
+        return content
+    tag_line = " ".join(f"#{tag}" for tag in normalized)
+    separator = "\n\n" if content.strip() else ""
+    return f"{content.rstrip()}{separator}{tag_line}\n"

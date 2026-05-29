@@ -3,6 +3,7 @@ const views = document.querySelectorAll(".view");
 const appShell = document.querySelector(".app-shell");
 
 setupSidebar();
+setupTreeContextMenu();
 setupTreeDragAndDrop();
 setupConfirmForms();
 setupVectorStoreSync();
@@ -142,6 +143,126 @@ function setupVectorStoreSync() {
   });
 }
 
+function setupTreeContextMenu() {
+  const menu = document.getElementById("tree-context-menu");
+  const folderInput = document.querySelector(".folder-form input[name='path']");
+  const folderForm = document.querySelector(".folder-form");
+  const quickFolder = document.getElementById("quick-create-folder");
+  let target = null;
+  if (!menu) return;
+
+  quickFolder?.addEventListener("click", () => {
+    const path = prompt("Nome da nova pasta", "nova-pasta");
+    if (!path || !folderInput || !folderForm) return;
+    folderInput.value = path;
+    folderForm.submit();
+  });
+
+  document.querySelectorAll(".tree-item").forEach((item) => {
+    item.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      target = treeTargetFromElement(item);
+      showTreeMenu(menu, target, event.clientX, event.clientY);
+    });
+  });
+
+  document.addEventListener("click", (event) => {
+    if (!menu.contains(event.target)) {
+      menu.hidden = true;
+    }
+  });
+
+  menu.addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-tree-action]");
+    if (!button || !target) return;
+    menu.hidden = true;
+    const action = button.dataset.treeAction;
+    const folderPath = target.type === "folder" ? target.path : parentFolder(target.path);
+
+    if (action === "new-note") {
+      const path = prompt("Nome da nova nota", folderPath ? `${folderPath}/nova-nota.md` : "nova-nota.md");
+      if (path) window.location.href = `/?mode=new&path=${encodeURIComponent(path)}`;
+      return;
+    }
+
+    if (action === "new-folder") {
+      const path = prompt("Nome da nova pasta", folderPath ? `${folderPath}/nova-pasta` : "nova-pasta");
+      if (!path) return;
+      if (folderInput && folderForm) {
+        folderInput.value = path;
+        folderForm.submit();
+      }
+      return;
+    }
+
+    if (action === "copy-note") {
+      await postTreeAction("/notes/copy", { path: target.path }, (data) => {
+        window.location.href = `/?path=${encodeURIComponent(data.path)}&mode=read`;
+      });
+      return;
+    }
+
+    if (action === "delete-note") {
+      if (!window.confirm(`Apagar nota ${target.path}?`)) return;
+      await postTreeAction("/notes/delete", { path: target.path }, () => {
+        window.location.href = "/";
+      }, true);
+      return;
+    }
+
+    if (action === "delete-folder") {
+      if (!window.confirm(`Apagar pasta ${target.path} e todo seu conteudo?`)) return;
+      await postTreeAction("/folders/delete", { path: target.path }, (data) => {
+        window.location.href = data.path ? `/?path=${encodeURIComponent(data.path)}&mode=read` : "/";
+      });
+    }
+  });
+}
+
+function treeTargetFromElement(item) {
+  if (item.dataset.treeType === "folder") {
+    return { type: "folder", path: item.dataset.folderPath || "" };
+  }
+  return { type: "note", path: item.dataset.notePath || "" };
+}
+
+function showTreeMenu(menu, target, x, y) {
+  menu.querySelector('[data-tree-action="copy-note"]').hidden = target.type !== "note";
+  menu.querySelector('[data-tree-action="delete-note"]').hidden = target.type !== "note";
+  menu.querySelector('[data-tree-action="delete-folder"]').hidden = target.type !== "folder" || !target.path;
+  menu.style.left = `${Math.min(x, window.innerWidth - 210)}px`;
+  menu.style.top = `${Math.min(y, window.innerHeight - 220)}px`;
+  menu.hidden = false;
+}
+
+async function postTreeAction(url, payload, onSuccess, formEncoded = false) {
+  const response = await fetch(url, formEncoded ? {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams(payload),
+  } : {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (response.redirected) {
+    window.location.href = response.url;
+    return;
+  }
+  const data = await response.json().catch(() => ({ ok: response.ok }));
+  if (!response.ok || data.ok === false) {
+    window.alert(data.error || "Nao foi possivel executar a acao.");
+    return;
+  }
+  onSuccess?.(data);
+}
+
+function parentFolder(path) {
+  const parts = String(path || "").split("/");
+  parts.pop();
+  return parts.join("/");
+}
+
 function setupIntelligence() {
   const pane = document.getElementById("intelligence");
   const writingPane = document.getElementById("writing");
@@ -188,7 +309,10 @@ function setupIntelligence() {
       const response = await fetch(`/api/intelligence/recommendations?path=${notePath}`);
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Nao foi possivel carregar recomendacoes.");
-      recommendationBox.innerHTML = renderConnectionRecommendations(data.recommendations || []);
+      recommendationBox.innerHTML = `
+        ${renderTagRecommendations(data.tag_recommendations || [], pane?.dataset.notePath || "")}
+        ${renderConnectionRecommendations(data.recommendations || [])}
+      `;
     } catch (error) {
       recommendationBox.innerHTML = `<p class="error">${escapeHtml(error.message)}</p>`;
     } finally {
@@ -201,6 +325,12 @@ function setupIntelligence() {
     const approveButton = event.target.closest("[data-approve-connection]");
     if (approveButton) {
       await handleConnectionDecision(approveButton, "/api/intelligence/recommendations/approve", "Aprovando...", "Aprovar");
+      return;
+    }
+
+    const tagButton = event.target.closest("[data-approve-tag]");
+    if (tagButton) {
+      await handleTagApproval(tagButton);
       return;
     }
 
@@ -263,6 +393,12 @@ function setupIntelligence() {
     const approveButton = event.target.closest("[data-approve-writing]");
     if (approveButton) {
       await approveWritingSuggestion(writingResult, approveButton);
+      return;
+    }
+
+    const addTagButton = event.target.closest("[data-add-writing-tag]");
+    if (addTagButton) {
+      addWritingTag(writingResult, addTagButton.dataset.addWritingTag || "");
     }
   });
 }
@@ -466,6 +602,46 @@ function renderConnectionRecommendations(items) {
   }).join("");
 }
 
+function renderTagRecommendations(items, notePath) {
+  if (!items.length) return "";
+  return `
+    <section class="tag-suggestion-panel">
+      <h3>Tags sugeridas</h3>
+      <div class="tag-suggestion-list">
+        ${items.map((item) => `
+          <article class="tag-suggestion-card">
+            <strong>#${escapeHtml(item.tag)}</strong>
+            <span>${escapeHtml(item.reason || "Tag relevante para enriquecer o grafo.")}</span>
+            <button type="button" data-approve-tag data-note-path="${escapeHtml(notePath)}" data-tag="${escapeHtml(item.tag)}">Aprovar tag</button>
+          </article>
+        `).join("")}
+      </div>
+    </section>
+  `;
+}
+
+async function handleTagApproval(button) {
+  button.disabled = true;
+  button.textContent = "Aprovando...";
+  try {
+    const response = await fetch("/api/intelligence/tags/approve", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        path: button.dataset.notePath,
+        tags: [button.dataset.tag],
+      }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Nao foi possivel aprovar a tag.");
+    button.closest(".tag-suggestion-card")?.remove();
+  } catch (error) {
+    window.alert(error.message);
+    button.disabled = false;
+    button.textContent = "Aprovar tag";
+  }
+}
+
 function renderWritingResult(data) {
   return `
     <section class="agent-answer writing-output">
@@ -480,11 +656,11 @@ function renderWritingResult(data) {
 }
 
 function renderWritingResultV2(data) {
-  const parsed = parseWritingContent(data.content || "");
+  const parsed = parseWritingContent(data.content || "", data.kind || "");
   const mainText = parsed.main?.content || data.content || "";
   const supportSections = parsed.sections.filter((section) => section !== parsed.main && !isBaseUsedSection(section.title));
   return `
-    <section class="writing-package" data-writing-kind="${escapeHtml(data.kind || "")}" data-writing-theme="${escapeHtml(data.theme || "")}">
+    <section class="writing-package" data-writing-kind="${escapeHtml(data.kind || "")}" data-writing-theme="${escapeHtml(data.theme || "")}" data-original-writing="${escapeHtml(encodeURIComponent(mainText))}">
       <div class="writing-package-header">
         <div>
           <span class="agent-provider">${escapeHtml(providerLabel(data.llm))} - ${escapeHtml(data.skill || "skill local")}</span>
@@ -497,9 +673,10 @@ function renderWritingResultV2(data) {
         </div>
       </div>
       <article class="writing-main">
-        <p class="writing-main-text">${formatMultiline(mainText)}</p>
+        <div class="writing-main-text" data-markdown-source="${escapeHtml(encodeURIComponent(mainText))}">${renderMarkdownLite(mainText)}</div>
         <textarea class="writing-editor" hidden>${escapeHtml(mainText)}</textarea>
       </article>
+      ${renderWritingTagEditor(data.suggested_tags || [])}
     </section>
     ${renderWritingSupportSections(supportSections)}
     ${renderAgentCards("Base usada", data.context, (item) => `
@@ -509,14 +686,40 @@ function renderWritingResultV2(data) {
   `;
 }
 
-function parseWritingContent(content) {
+function renderWritingTagEditor(items) {
+  const tags = items.map((item) => `#${item.tag}`).join(" ");
+  return `
+    <section class="writing-tags">
+      <label for="writing-tags-input">Tags aprovadas</label>
+      <input id="writing-tags-input" list="writing-tag-options" value="${escapeHtml(tags)}" placeholder="#finops #azure">
+      <datalist id="writing-tag-options">
+        ${items.map((item) => `<option value="#${escapeHtml(item.tag)}"></option>`).join("")}
+      </datalist>
+      ${items.length ? `
+        <div class="suggested-tag-list">
+          ${items.map((item) => `<button class="secondary-button" type="button" data-add-writing-tag="${escapeHtml(item.tag)}">#${escapeHtml(item.tag)}</button>`).join("")}
+        </div>
+      ` : ""}
+    </section>
+  `;
+}
+
+function parseWritingContent(content, kind = "") {
   const sections = [];
   const headingPattern = /^##\s+(?:\d+\.\s+)?(.+)$/gm;
   const matches = [...content.matchAll(headingPattern)];
+  const explicitMainPattern = /^##\s+(?:\d+\.\s+)?(postagem completa|artigo completo|texto completo)\s*$/gim;
+  const hasExplicitMain = explicitMainPattern.test(content);
+  if (kind !== "linkedin" && !hasExplicitMain) {
+    return {
+      main: { title: writingMainLabel(kind), content },
+      sections: [{ title: writingMainLabel(kind), content }],
+    };
+  }
   if (!matches.length) {
     return {
-      main: { title: "Postagem completa", content },
-      sections: [{ title: "Postagem completa", content }],
+      main: { title: writingMainLabel(kind), content },
+      sections: [{ title: writingMainLabel(kind), content }],
     };
   }
 
@@ -567,7 +770,7 @@ function renderWritingSupportCard(section) {
   return `
     <article class="writing-support-card">
       <h3>${escapeHtml(section.title)}</h3>
-      <p>${formatMultiline(section.content)}</p>
+      <div>${renderMarkdownLite(section.content)}</div>
     </article>
   `;
 }
@@ -594,7 +797,7 @@ function readWritingMainText(container) {
   const editor = container.querySelector(".writing-editor");
   if (editor && !editor.hidden) return editor.value.trim();
   const text = container.querySelector(".writing-main-text");
-  return text?.textContent.trim() || "";
+  return text?.dataset.markdownSource ? decodeURIComponent(text.dataset.markdownSource).trim() : text?.textContent.trim() || "";
 }
 
 function toggleWritingEditor(container, button) {
@@ -603,14 +806,16 @@ function toggleWritingEditor(container, button) {
   if (!editor || !text) return;
   const editing = editor.hidden;
   if (editing) {
-    editor.value = text.textContent.trim();
+    editor.value = readWritingMainText(container);
     editor.hidden = false;
     text.hidden = true;
     button.textContent = "Concluir edicao";
     editor.focus();
     return;
   }
-  text.innerHTML = formatMultiline(editor.value.trim());
+  const value = editor.value.trim();
+  text.dataset.markdownSource = encodeURIComponent(value);
+  text.innerHTML = renderMarkdownLite(value);
   text.hidden = false;
   editor.hidden = true;
   button.textContent = "Editar";
@@ -633,8 +838,10 @@ async function approveWritingSuggestion(container, button) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         content,
+        original_content: packageElement?.dataset.originalWriting ? decodeURIComponent(packageElement.dataset.originalWriting) : "",
         kind: packageElement?.dataset.writingKind || "",
         title: packageElement?.dataset.writingTheme || titleFromText(content),
+        tags: readWritingTags(container),
       }),
     });
     const data = await response.json();
@@ -642,13 +849,28 @@ async function approveWritingSuggestion(container, button) {
     button.textContent = "Salvo";
     const status = document.createElement("p");
     status.className = "success";
-    status.innerHTML = `Texto salvo em <a href="${escapeHtml(data.url)}">${escapeHtml(data.path)}</a>.`;
+    const learningText = data.learning?.recorded ? " Aprendizado de escrita registrado." : "";
+    status.innerHTML = `Texto salvo em <a href="${escapeHtml(data.url)}">${escapeHtml(data.path)}</a>.${escapeHtml(learningText)}`;
     packageElement.insertAdjacentElement("afterend", status);
   } catch (error) {
     window.alert(error.message);
     button.disabled = false;
     button.textContent = previousText;
   }
+}
+
+function readWritingTags(container) {
+  const input = container.querySelector("#writing-tags-input");
+  if (!input) return [];
+  return input.value.split(/[\s,]+/).map((tag) => tag.trim()).filter(Boolean);
+}
+
+function addWritingTag(container, tag) {
+  const input = container.querySelector("#writing-tags-input");
+  if (!input || !tag) return;
+  const current = new Set(readWritingTags(container).map((item) => item.replace(/^#/, "").toLowerCase()));
+  current.add(tag.replace(/^#/, "").toLowerCase());
+  input.value = [...current].map((item) => `#${item}`).join(" ");
 }
 
 function titleFromText(content) {
@@ -662,6 +884,64 @@ function temporarilyRenameButton(button, label) {
   window.setTimeout(() => {
     button.textContent = previousText;
   }, 1400);
+}
+
+function renderMarkdownLite(markdown) {
+  const lines = String(markdown || "").split("\n");
+  let html = "";
+  let paragraph = [];
+  let listOpen = false;
+
+  const flushParagraph = () => {
+    if (!paragraph.length) return;
+    html += `<p>${renderInlineMarkdown(paragraph.join(" "))}</p>`;
+    paragraph = [];
+  };
+  const closeList = () => {
+    if (!listOpen) return;
+    html += "</ul>";
+    listOpen = false;
+  };
+
+  lines.forEach((line) => {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      flushParagraph();
+      closeList();
+      return;
+    }
+    const heading = trimmed.match(/^(#{1,6})\s+(.+)$/);
+    if (heading) {
+      flushParagraph();
+      closeList();
+      const level = Math.min(6, heading[1].length + 1);
+      html += `<h${level}>${renderInlineMarkdown(heading[2])}</h${level}>`;
+      return;
+    }
+    const listItem = trimmed.match(/^[-*]\s+(.+)$/);
+    if (listItem) {
+      flushParagraph();
+      if (!listOpen) {
+        html += "<ul>";
+        listOpen = true;
+      }
+      html += `<li>${renderInlineMarkdown(listItem[1])}</li>`;
+      return;
+    }
+    paragraph.push(trimmed);
+  });
+
+  flushParagraph();
+  closeList();
+  return html;
+}
+
+function renderInlineMarkdown(value) {
+  let html = escapeHtml(value);
+  html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  html = html.replace(/\*([^*]+)\*/g, "<em>$1</em>");
+  html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
+  return html;
 }
 
 function syncSummaryText(data) {
@@ -974,10 +1254,10 @@ function renderLocalGraph(canvas, graph) {
   const focusNode = nodes.find((node) => node.id === focusId);
 
   if (!focusNode || nodes.length <= 1) {
-    context.fillStyle = "#1f1f1f";
+    context.fillStyle = "#050a13";
     context.fillRect(0, 0, width, height);
     if (status) status.textContent = "Sem conexoes diretas";
-    context.fillStyle = "rgba(255, 255, 255, 0.62)";
+    context.fillStyle = "rgba(248, 250, 252, 0.72)";
     context.font = "14px Segoe UI, sans-serif";
     context.fillText("Esta nota ainda nao possui tags ou links diretos.", 24, 170);
     return;
@@ -1140,7 +1420,7 @@ function drawLocalGraph() {
   const state = localGraphState;
   const { context, viewport } = state;
   context.clearRect(0, 0, state.screenWidth, state.screenHeight);
-  context.fillStyle = "#1f1f1f";
+  context.fillStyle = "#050a13";
   context.fillRect(0, 0, state.screenWidth, state.screenHeight);
   context.save();
   context.translate(viewport.offsetX, viewport.offsetY);
@@ -1163,12 +1443,12 @@ function drawLocalGraph() {
     const isFocus = node.id === state.focusId;
     const radius = renderedNodeRadius(node) + (node === hoveredNode ? 4 : 0) + (isFocus ? 3 : 0);
     context.beginPath();
-    context.fillStyle = isFocus ? "#ffffff" : graphNodeColor(node, highlighted);
+    context.fillStyle = isFocus ? "#22d3ee" : graphNodeColor(node, highlighted);
     context.arc(node.x, node.y, radius, 0, Math.PI * 2);
     context.fill();
 
     if (node.group === "tag" || isFocus || node === hoveredNode) {
-      context.fillStyle = node === hoveredNode || isFocus ? "rgba(255,255,255,0.92)" : "rgba(74,222,128,0.72)";
+      context.fillStyle = node === hoveredNode || isFocus ? "rgba(248,250,252,0.94)" : "rgba(34,211,238,0.78)";
       context.font = isFocus ? "700 13px Segoe UI, sans-serif" : "12px Segoe UI, sans-serif";
       context.fillText(node === hoveredNode ? node.label : truncateLabel(node.label, 34), node.x + radius + 6, node.y + 4);
     }
@@ -1449,7 +1729,7 @@ function createForceLayout(nodes, edges) {
 
 function drawForceGraph(context, simulation, viewport) {
   context.clearRect(0, 0, simulation.screenWidth, simulation.screenHeight);
-  context.fillStyle = "#1f1f1f";
+  context.fillStyle = "#050a13";
   context.fillRect(0, 0, simulation.screenWidth, simulation.screenHeight);
   context.save();
   context.translate(viewport.offsetX, viewport.offsetY);
@@ -1479,8 +1759,8 @@ function drawForceGraph(context, simulation, viewport) {
 
     if (node.group === "tag" || node.degree > 8 || node === hoveredNode) {
       context.fillStyle = node === hoveredNode
-        ? "rgba(255, 255, 255, 0.92)"
-        : node.group === "tag" ? "rgba(74, 222, 128, 0.30)" : "rgba(209, 213, 219, 0.16)";
+        ? "rgba(248, 250, 252, 0.94)"
+        : node.group === "tag" ? "rgba(217, 70, 239, 0.46)" : "rgba(34, 211, 238, 0.22)";
       context.fillText(node === hoveredNode ? node.label : truncateLabel(node.label, 30), node.x + radius + 5, node.y + 4);
     }
   });
@@ -1503,19 +1783,19 @@ function highlightedNodeIds(simulation, hoveredNode) {
 
 function graphEdgeColor(edge, highlighted, hasHover) {
   if (highlighted) {
-    return edge.type === "linked" ? "rgba(255, 255, 255, 0.82)" : "rgba(74, 222, 128, 0.88)";
+    return edge.type === "linked" ? "rgba(34, 211, 238, 0.88)" : "rgba(217, 70, 239, 0.90)";
   }
   if (hasHover) {
-    return edge.type === "linked" ? "rgba(210, 210, 210, 0.06)" : "rgba(74, 222, 128, 0.05)";
+    return edge.type === "linked" ? "rgba(34, 211, 238, 0.08)" : "rgba(217, 70, 239, 0.08)";
   }
-  return edge.type === "linked" ? "rgba(210, 210, 210, 0.30)" : "rgba(74, 222, 128, 0.22)";
+  return edge.type === "linked" ? "rgba(34, 211, 238, 0.28)" : "rgba(217, 70, 239, 0.24)";
 }
 
 function graphNodeColor(node, highlighted) {
   if (highlighted) {
-    return node.group === "tag" ? "#4ade80" : "#d1d5db";
+    return node.group === "tag" ? "#d946ef" : "#5b6cff";
   }
-  return node.group === "tag" ? "rgba(74, 222, 128, 0.22)" : "rgba(209, 213, 219, 0.22)";
+  return node.group === "tag" ? "rgba(217, 70, 239, 0.26)" : "rgba(91, 108, 255, 0.30)";
 }
 
 function fitLayoutToWorld(simulation) {

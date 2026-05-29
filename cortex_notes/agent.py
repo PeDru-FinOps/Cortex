@@ -11,6 +11,7 @@ from pathlib import Path
 from cortex_notes.graph import build_note_lookup, extract_tags, extract_wiki_links, resolve_wiki_link
 from cortex_notes.repository import NoteRepository, RepositoryError
 from cortex_notes.vector_cache import cache_summary, load_vector_cache, search_vector_cache
+from cortex_notes.writing_learning import load_private_security_skills, load_private_writing_skills
 
 
 TOKEN_PATTERN = re.compile(r"[A-Za-zÀ-ÖØ-öø-ÿ0-9][A-Za-zÀ-ÖØ-öø-ÿ0-9_-]{2,}")
@@ -540,7 +541,7 @@ class CortexAgent:
         client = OpenAI(api_key=api_key)
         response = client.responses.create(
             model=model,
-            instructions=(
+            instructions=with_private_security_skills(
                 "Voce avalia conexoes entre notas de um segundo cerebro. "
                 "Nao aprove conexoes apenas por tags iguais. Priorize relacao conceitual, dependencia operacional, "
                 "causa e efeito, continuidade de processo, contradicao ou oportunidade de sintese. "
@@ -627,7 +628,7 @@ class CortexAgent:
 
         response = client.responses.create(
             model=model,
-            instructions=(
+            instructions=with_private_security_skills(
                 "Voce e a agente de inteligencia do Cortex, um segundo cerebro em Markdown. "
                 "Responda em portugues do Brasil. Use apenas o contexto recuperado como base factual. "
                 "Raciocine conectando informacoes, identificando padroes, hipoteses, relacoes implicitas "
@@ -659,7 +660,7 @@ class CortexAgent:
 
         response = client.responses.create(
             model=model,
-            instructions=(
+            instructions=with_private_security_skills(
                 "Voce e a agente de escrita do Cortex. Use a skill fornecida como norma de estilo, "
                 "estrutura e criterio de qualidade. Use o contexto recuperado do Cortex como base factual. "
                 "Responda em portugues do Brasil. Nao invente fatos especificos que nao estejam no contexto; "
@@ -703,6 +704,9 @@ class CortexAgent:
                 continue
             contents.append(note["content"])
             existing_paths.append(note["path"])
+        for private_skill in load_private_writing_skills():
+            contents.append(private_skill["content"])
+            existing_paths.append(private_skill["path"])
         return {
             "path": ", ".join(existing_paths) if existing_paths else "fallback-local",
             "content": "\n\n---\n\n".join(contents),
@@ -933,6 +937,22 @@ def vector_store_result_to_context(item) -> dict:
     }
 
 
+def with_private_security_skills(instructions: str) -> str:
+    skills = load_private_security_skills()
+    if not skills:
+        return instructions
+    security_context = "\n\n".join(
+        f"Skill privada obrigatoria ({skill['path']}):\n{skill['content']}"
+        for skill in skills
+    )
+    return (
+        f"{instructions}\n\n"
+        "Skills privadas de seguranca obrigatorias:\n"
+        f"{security_context}\n\n"
+        "Aplique essas skills em toda resposta, revisao, raciocinio e escrita."
+    )
+
+
 def build_llm_prompt(message: str, base: dict) -> str:
     context = "\n\n".join(
         (
@@ -975,11 +995,26 @@ def build_writing_prompt(kind: str, theme: str, skill: dict, base: dict) -> str:
         "article": "artigo tecnico completo",
         "requested": "texto solicitado pelo usuario",
     }.get(kind, "texto solicitado pelo usuario")
+    structure_instruction = {
+        "linkedin": (
+            "Para LinkedIn, se entregar material estrategico alem do post, coloque o texto publicavel "
+            "em uma secao exatamente chamada '## Postagem completa'."
+        ),
+        "article": (
+            "Para artigo, entregue o artigo completo como corpo principal em Markdown. "
+            "Nao use secoes auxiliares numeradas antes do artigo. Use titulos internos normalmente."
+        ),
+        "requested": (
+            "Para texto solicitado, entregue o texto final como corpo principal em Markdown. "
+            "Nao separe em blocos estrategicos, a menos que o usuario tenha pedido isso."
+        ),
+    }.get(kind, "")
     return (
         f"Tipo de escrita: {kind_label}\n"
         f"Tema escolhido: {theme or 'inferir a partir da nota/contexto atual'}\n\n"
         f"Skill de escrita a seguir:\n{skill.get('content') or 'Sem skill encontrada.'}\n\n"
         f"Contexto recuperado do Cortex:\n{context or 'Nenhum contexto recuperado.'}\n\n"
+        f"Regra de formato:\n{structure_instruction}\n\n"
         "Gere a saida final respeitando a estrutura obrigatoria da skill quando existir. "
         "Inclua fontes do Cortex usadas ao final em uma secao curta chamada 'Base usada'."
     )

@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from cortex_notes.agent import CortexAgent, build_llm_prompt, tokenize, vector_store_result_to_context
@@ -119,12 +120,45 @@ class AgentTest(unittest.TestCase):
             repository.write_note("IA/Skills/linkedin_posts_skill.md", "# LinkedIn Skill")
             repository.write_note("base.md", "# FinOps\n\nTags e alocacao de custos.")
 
-            with patch.dict("os.environ", {"OPENAI_API_KEY": ""}):
+            with patch.dict("os.environ", {"OPENAI_API_KEY": "", "CORTEX_PRIVATE_SKILLS_DIR": f"{folder}/private-empty"}):
                 result = CortexAgent(repository).write_content("linkedin", "tags")
 
             self.assertEqual(result["kind"], "linkedin")
             self.assertEqual(result["skill"], "IA/Skills/linkedin_posts_skill.md")
             self.assertIn("content", result)
+
+    def test_write_content_loads_private_reviewer_skill_when_available(self):
+        with tempfile.TemporaryDirectory() as folder:
+            repository = NoteRepository(folder)
+            repository.write_note("IA/Skills/linkedin_posts_skill.md", "# LinkedIn Skill")
+            repository.write_note("base.md", "# FinOps\n\nTags e alocacao de custos.")
+            private_dir = f"{folder}/private"
+            private_skill = Path(private_dir) / "revisor_pedro" / "SKILL.md"
+            private_skill.parent.mkdir(parents=True)
+            private_skill.write_text("# Skill privada", encoding="utf-8")
+
+            with patch.dict("os.environ", {"OPENAI_API_KEY": "", "CORTEX_PRIVATE_SKILLS_DIR": private_dir}):
+                result = CortexAgent(repository).write_content("linkedin", "tags")
+
+            self.assertIn("IA/Skills/linkedin_posts_skill.md", result["skill"])
+            self.assertIn("revisor_pedro", result["skill"])
+
+    def test_private_security_skills_are_loaded_for_writing(self):
+        with tempfile.TemporaryDirectory() as folder:
+            repository = NoteRepository(folder)
+            repository.write_note("IA/Skills/newsletter_skill.md", "# Newsletter Skill")
+            repository.write_note("base.md", "# FinOps\n\nTags e alocacao de custos.")
+            private_dir = f"{folder}/private"
+            for name in ["agente_security", "security_reviwer"]:
+                private_skill = Path(private_dir) / name / "SKILL.md"
+                private_skill.parent.mkdir(parents=True, exist_ok=True)
+                private_skill.write_text(f"# {name}", encoding="utf-8")
+
+            with patch.dict("os.environ", {"OPENAI_API_KEY": "", "CORTEX_PRIVATE_SKILLS_DIR": private_dir}):
+                result = CortexAgent(repository).write_content("article", "tags")
+
+            self.assertIn("agente_security", result["skill"])
+            self.assertIn("security_reviwer", result["skill"])
 
 
 if __name__ == "__main__":

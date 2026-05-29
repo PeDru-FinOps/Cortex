@@ -189,3 +189,19 @@ Se estiver com pressa, use isso:
 - Está completo?
 - Tem erro grave?
 - Qual ajuda mais?
+
+#crewai
+
+#agent
+
+#azure
+
+#cloudcomputing
+
+#data_analysis
+
+#data_engineering
+
+#finops
+
+#governance

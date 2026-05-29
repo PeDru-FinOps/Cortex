@@ -1,33 +1,113 @@
 # Cortex
 
-Repositorio local de notas Markdown correlacionadas por pastas e hashtags.
+Cortex e um aplicativo local para manter notas Markdown, conectar ideias por tags e wiki-links, conversar com uma IA sobre sua base de conhecimento e gerar textos a partir do seu proprio conteudo.
+
+Ele pode rodar apenas localmente com busca TF-IDF, ou integrado ao OpenAI Vector Store.
 
 ## Funcionalidades
 
 - Login com usuario e senha definidos no `.env`
-- Diretorio de pastas, subpastas e arquivos `.md`
-- Criacao, leitura e alteracao de notas Markdown
-- Pre-visualizacao em HTML
-- Grafo gerado a partir de diretorios e hashtags
-- Chat IA com RAG sobre as notas do Cortex
+- Leitura, criacao e edicao de notas Markdown
+- Upload de Markdown, imagens, pastas e subpastas
+- Renderizacao de imagens e wiki-links
+- Grafo de notas, tags e conexoes
+- Chat IA com RAG sobre o Cortex
+- Aba Inteligencia para sugerir conexoes e tags
+- Aba Escrita para gerar, editar, aprovar e salvar textos em `Artigos/`
+- Aprendizado privado de estilo via skill `revisor_pedro`
 
-## Como rodar
+## Setup apos Git Clone
+
+Requisitos:
+
+- Python 3.11+
+- Git
+- Uma OpenAI API key, apenas se quiser usar LLM/Vector Store
+
+Clone e instale:
 
 ```powershell
+git clone <url-do-repositorio>
+cd Cortex
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 Copy-Item .env.example .env
+```
+
+Edite o `.env` antes de iniciar.
+
+Configuracao minima local:
+
+```env
+APP_USER=admin
+APP_PASSWORD=troque-esta-senha
+SECRET_KEY=gere-uma-chave-grande
+NOTES_ROOT=notes
+CORTEX_VECTOR_STORE=tfidf
+CORTEX_PRIVATE_SKILLS_DIR=.cortex_private_skills
+```
+
+Rode:
+
+```powershell
 python app.py
 ```
 
-Depois acesse `http://127.0.0.1:5000`.
+Acesse:
 
-Edite o arquivo `.env` antes de usar em um ambiente real.
+```text
+http://127.0.0.1:5000
+```
 
-## Configuracao da IA
+## Estrutura Local
 
-Adicione sua chave no `.env`:
+Pastas importantes:
+
+```text
+notes/                    notas Markdown do Cortex
+.cortex_private_skills/   skills privadas e sensiveis
+.cortex_sync/             manifesto local de sync com OpenAI
+.cortex_vector_cache/     cache local do Vector Store
+.cortex_intelligence/     rejeicoes de conexoes sugeridas
+```
+
+As pastas `.cortex_*` ficam no `.gitignore` porque podem conter estado local, preferencias privadas ou dados sensiveis.
+
+## Variaveis do `.env`
+
+| Variavel | Uso |
+| --- | --- |
+| `APP_USER` | Usuario de login. |
+| `APP_PASSWORD` | Senha de login. |
+| `SECRET_KEY` | Chave interna do Flask. Troque em qualquer ambiente real. |
+| `NOTES_ROOT` | Pasta das notas Markdown. Padrao: `notes`. |
+| `OPENAI_API_KEY` | Chave da OpenAI para chat, escrita, sync e leitura do Vector Store. |
+| `OPENAI_MODEL` | Modelo usado pela IA. |
+| `OPENAI_MAX_OUTPUT_TOKENS` | Limite de saida do Chat IA. |
+| `OPENAI_WRITING_MAX_OUTPUT_TOKENS` | Limite de saida da escrita. |
+| `CORTEX_VECTOR_STORE` | `tfidf` para busca local; `openai` para usar Vector Store/cache. |
+| `OPENAI_VECTOR_STORE_ID` | ID do Vector Store OpenAI, por exemplo `vs_...`. |
+| `OPENAI_VECTOR_MAX_RESULTS` | Quantidade maxima de resultados em busca viva. |
+| `CORTEX_ALLOW_LIVE_VECTOR_SEARCH` | `0` evita busca viva paga; `1` permite consulta remota em tempo real. |
+| `CORTEX_PRIVATE_SKILLS_DIR` | Pasta privada para skills sensiveis. Padrao: `.cortex_private_skills`. |
+| `OPENAI_FILE_PURPOSE` | Purpose usado no upload de arquivos. Padrao: `assistants`. |
+
+## Modo Local Sem OpenAI
+
+Para usar sem custos de API:
+
+```env
+CORTEX_VECTOR_STORE=tfidf
+OPENAI_API_KEY=
+OPENAI_VECTOR_STORE_ID=
+```
+
+Nesse modo, leitura, edicao, grafo, tags e busca local continuam funcionando. O Chat IA e a Escrita usam fallback local quando nao houver chave OpenAI.
+
+## Configurar OpenAI
+
+No `.env`:
 
 ```env
 OPENAI_API_KEY=sua-chave-aqui
@@ -40,96 +120,132 @@ OPENAI_VECTOR_MAX_RESULTS=8
 CORTEX_ALLOW_LIVE_VECTOR_SEARCH=0
 ```
 
-Depois reinicie o Flask. A aba **Chat IA** aparece na tela de leitura de uma nota. Ela recupera contexto das notas, envia esse contexto para a OpenAI quando a chave existe e usa um fallback local quando a chave ou o SDK nao estao disponiveis.
+Crie o Vector Store na OpenAI, copie o ID para `OPENAI_VECTOR_STORE_ID` e reinicie o Flask.
 
-### Variaveis do `.env`
+## Sync, Vector Store e Cache
 
-| Variavel | Uso |
-| --- | --- |
-| `APP_USER` | Usuario de login da aplicacao. |
-| `APP_PASSWORD` | Senha de login da aplicacao. |
-| `SECRET_KEY` | Chave interna do Flask para sessao. Troque em producao. |
-| `NOTES_ROOT` | Pasta local onde ficam as notas Markdown. Padrao: `notes`. |
-| `OPENAI_API_KEY` | Chave da OpenAI usada para chat, escrita, sync e leitura do Vector Store. |
-| `OPENAI_MODEL` | Modelo usado para respostas e escrita. |
-| `OPENAI_MAX_OUTPUT_TOKENS` | Limite de saida para o Chat IA. |
-| `OPENAI_WRITING_MAX_OUTPUT_TOKENS` | Limite de saida para textos gerados na aba Inteligencia. |
-| `CORTEX_VECTOR_STORE` | `tfidf` usa busca local; `openai` usa cache/Vector Store OpenAI. |
-| `OPENAI_VECTOR_STORE_ID` | ID do Vector Store da OpenAI, por exemplo `vs_...`. |
-| `OPENAI_VECTOR_MAX_RESULTS` | Quantidade maxima de resultados em busca viva do Vector Store, quando habilitada. |
-| `CORTEX_ALLOW_LIVE_VECTOR_SEARCH` | `0` evita busca viva paga e usa cache/local. `1` permite consultar o Vector Store em tempo real. |
-| `OPENAI_FILE_PURPOSE` | Purpose usado no upload dos arquivos. Padrao: `assistants`. |
+O botao **Sync** envia notas locais para o OpenAI Vector Store.
 
-## RAG e Vector Store
-
-O Cortex suporta dois modos:
-
-- `CORTEX_VECTOR_STORE=tfidf`: indice local, em memoria, baseado em TF-IDF e similaridade por cosseno sobre chunks de Markdown.
-- `CORTEX_VECTOR_STORE=openai`: usa o OpenAI Vector Store indicado em `OPENAI_VECTOR_STORE_ID`, preferindo o cache local em `.cortex_vector_cache/`.
-
-No modo OpenAI, a aplicacao foi configurada para economizar chamadas pagas:
-
-- A escrita e o Chat IA procuram primeiro no cache local do Vector Store.
-- Se o cache existe e tem texto utilizavel, clicar em **Ler Vector** reutiliza o cache e nao relê remotamente.
-- A busca viva no Vector Store fica desligada por padrao com `CORTEX_ALLOW_LIVE_VECTOR_SEARCH=0`.
-- A chamada final para a LLM ainda custa tokens do modelo, mas nao usa `file_search` automaticamente.
-
-Use `CORTEX_ALLOW_LIVE_VECTOR_SEARCH=1` apenas quando quiser permitir consultas em tempo real ao Vector Store. Isso pode gerar custos adicionais de File Search/busca.
-
-### Sincronizar notas
-
-Use o botao **Sync** na sidebar para enviar as notas locais ao OpenAI Vector Store configurado em `OPENAI_VECTOR_STORE_ID`.
-
-O Sync:
+Ele:
 
 - envia notas novas;
 - reenvia notas alteradas;
-- remove do Vector Store arquivos que foram apagados localmente;
-- guarda um manifesto local em `.cortex_sync/`, ignorado pelo Git.
+- remove do Vector Store arquivos apagados localmente;
+- grava manifesto local em `.cortex_sync/`.
 
-O Sync nao cria o Vector Store automaticamente. Crie o Vector Store na OpenAI, coloque o ID no `.env` e depois clique em **Sync**.
-
-### Ler Vector e cache
-
-Use o botao **Ler Vector** na aba **Inteligencia** para montar o cache local a partir do Vector Store. Esse cache fica em:
+O botao **Ler Vector** monta o cache local:
 
 ```text
 .cortex_vector_cache/openai_vector_store.json
 ```
 
-Esse diretorio e ignorado pelo Git. Depois que o cache aparece como utilizavel, novas geracoes de texto reaproveitam esse arquivo e nao precisam reler o Vector Store.
+Depois que o cache estiver utilizavel, chat e escrita usam esse cache antes de qualquer fallback local. Com `CORTEX_ALLOW_LIVE_VECTOR_SEARCH=0`, o Cortex evita busca viva paga no Vector Store.
 
 Fluxo recomendado para economizar:
 
-1. Configure `OPENAI_VECTOR_STORE_ID`.
-2. Clique em **Sync** quando alterar notas locais e quiser enviar mudancas para a OpenAI.
-3. Clique em **Ler Vector** somente depois de um Sync relevante ou quando quiser atualizar o cache.
-4. Gere textos normalmente. A escrita usara o cache.
+1. Clique em **Sync** depois de alterar bastante sua base.
+2. Clique em **Ler Vector** para atualizar o cache.
+3. Gere textos e converse usando o cache.
+4. Deixe `CORTEX_ALLOW_LIVE_VECTOR_SEARCH=0`, salvo quando quiser pagar por busca remota em tempo real.
 
-Se o cache estiver ausente, vazio ou inutilizavel, a escrita cai para um briefing local rapido a partir das notas. A interface mostra essa situacao no painel de progresso.
+## Skills Privadas
 
-## Aba Inteligencia
+Skills privadas ficam fora das notas e sao ignoradas pelo Git.
 
-A aba **Inteligencia** sugere conexoes implicitas entre notas e gera textos usando as skills de escrita salvas no Cortex.
+Padrao:
 
-As conexoes sugeridas podem ser aprovadas ou rejeitadas. Ao aprovar, o Cortex adiciona um wiki-link na nota de origem, dentro da secao `## Conexoes aprovadas`. Rejeicoes ficam em `.cortex_intelligence/`, ignorado pelo Git, e deixam de aparecer nas proximas sugestoes. O ranking usa similaridade de conteudo/conceitos como sinal principal; tags sao apenas sinal secundario. Com OpenAI configurada, a LLM revisa os candidatos antes de exibir.
+```text
+.cortex_private_skills/
+```
 
-Opcoes de escrita:
+Voce pode alterar:
 
-- **LinkedIn post**: usa `IA/Skills/linkedin_posts_skill.md`.
-- **Artigo**: usa `IA/Skills/newsletter_skill.md` e `IA/Skills/seo_skill.md`.
-- **Solicitado**: voce informa um tema e a IA gera um texto com base no Cortex.
+```env
+CORTEX_PRIVATE_SKILLS_DIR=C:\Users\seu-usuario\Documents\cortex-private-skills
+```
 
-Para trocar futuramente por outro Vector Store, mantenha a mesma fronteira de codigo em `cortex_notes/agent.py`:
+Estrutura esperada:
 
-- `split_markdown`: prepara chunks.
-- `CortexAgent.search`: recupera os chunks relevantes.
-- `CortexAgent.chat`: envia pergunta + contexto para a LLM.
+```text
+agente_security/
+  SKILL.md
+security_reviwer/
+  SKILL.md
+revisor_pedro/
+  SKILL.md
+```
 
-O caminho recomendado e extrair uma interface de recuperacao, por exemplo `VectorIndex.search(query, focus_path, limit)`, e implementar adaptadores para:
+As skills `agente_security` e `security_reviwer` sao carregadas sempre que existirem, em chat, revisao de conexoes e escrita. Elas devem ficar privadas porque podem conter guardrails, criterios internos e dados sensiveis.
 
-- OpenAI Vector Stores/File Search
+A skill `revisor_pedro` e criada automaticamente quando voce edita um texto gerado e clica em **Aprovar e salvar**. Ela registra aprendizados de estilo, preferencias e recusas explicitas, sem salvar isso nas notas do Cortex.
+
+## Notas, Tags e Grafo
+
+As notas ficam em Markdown dentro de `NOTES_ROOT`.
+
+Use:
+
+- `#tags` para enriquecer o grafo;
+- `[[Wiki Links]]` para conectar notas;
+- imagens via upload ou links Markdown.
+
+Ao criar uma nota manualmente, ha um campo de tags com autocomplete baseado nas tags ja existentes. Na aba **Inteligencia**, o Cortex tambem sugere tags para a nota atual, mas elas so sao aplicadas quando voce aprova.
+
+## Escrita
+
+Na aba **Escrita**, voce pode gerar:
+
+- LinkedIn post
+- Artigo
+- Texto solicitado
+
+O texto gerado nao e salvo automaticamente.
+
+Fluxo:
+
+1. Gere o texto.
+2. Edite o bloco principal, se quiser.
+3. Ajuste as tags aprovadas.
+4. Clique em **Aprovar e salvar**.
+
+O arquivo aprovado vai para:
+
+```text
+notes/Artigos/
+```
+
+Se a pasta nao existir, o Cortex cria automaticamente.
+
+## Inteligencia
+
+A aba **Inteligencia** sugere:
+
+- conexoes entre notas;
+- tags relevantes para enriquecer o grafo.
+
+Conexoes e tags precisam ser aprovadas manualmente. Rejeicoes de conexoes ficam em `.cortex_intelligence/`.
+
+## Trocar o Mecanismo de Vector Store
+
+A fronteira principal esta em `cortex_notes/agent.py`:
+
+- `split_markdown`: prepara chunks;
+- `CortexAgent.search`: recupera contexto relevante;
+- `CortexAgent.chat`: envia pergunta e contexto para a LLM.
+
+Um caminho futuro e extrair uma interface `VectorIndex.search(query, focus_path, limit)` e criar adaptadores para:
+
+- OpenAI Vector Stores
 - Chroma ou FAISS local
 - Pinecone, Qdrant ou Weaviate
 
-Com isso, a UI e a chamada da LLM continuam iguais; apenas o mecanismo de recuperacao muda.
+Assim a UI e a chamada da LLM continuam iguais; apenas o mecanismo de recuperacao muda.
+
+## Testes
+
+Rode:
+
+```powershell
+python -m unittest discover -s tests
+python -m compileall app.py cortex_notes tests
+```

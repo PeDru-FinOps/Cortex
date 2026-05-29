@@ -12,16 +12,17 @@ from flask import Flask, jsonify, redirect, render_template, request, send_file,
 
 from cortex_notes.agent import chat_with_agent, recommend_connections, run_agent, write_with_agent
 from cortex_notes.connection_rejections import load_rejections, reject_connection
-from cortex_notes.graph import build_graph, build_local_graph, build_note_lookup
+from cortex_notes.graph import build_graph, build_local_graph, build_note_lookup, extract_tags
 from cortex_notes.markdown_render import render_markdown
 from cortex_notes.openai_sync import SyncError, sync_notes_to_openai
-from cortex_notes.repository import NoteRepository, RepositoryError
+from cortex_notes.repository import NoteRepository, RepositoryError, append_tags_to_content, normalize_tags
 from cortex_notes.vector_cache import (
     VectorCacheError,
     cache_summary,
     load_vector_cache,
     read_openai_vector_store_to_cache,
 )
+from cortex_notes.writing_learning import record_writing_learning
 
 
 load_dotenv()
@@ -107,6 +108,7 @@ def index():
         preview_html=preview_html,
         mode=mode,
         uploaded=request.args.get("uploaded"),
+        all_tags=all_repository_tags(repository),
     )
 
 
@@ -115,6 +117,8 @@ def index():
 def save_note():
     path = request.form.get("path", "").strip()
     content = request.form.get("content", "")
+    tags = parse_tag_string(request.form.get("tags", ""))
+    content = append_tags_to_content(content, tags)
 
     try:
         saved_path = repository.write_note(path, content)
@@ -129,6 +133,7 @@ def save_note():
                 preview_html="",
                 mode="edit",
                 error=str(error),
+                all_tags=all_repository_tags(repository),
             ),
             400,
         )
@@ -147,6 +152,18 @@ def delete_note():
         return redirect(url_for("index", path=path, mode="read"))
 
     return redirect(url_for("index"))
+
+
+@app.post("/notes/copy")
+@login_required
+def copy_note():
+    payload = request.get_json(silent=True) or {}
+    path = str(payload.get("path", "")).strip()
+    try:
+        copied_path = repository.copy_note(path)
+    except RepositoryError as error:
+        return jsonify({"ok": False, "error": str(error)}), 400
+    return jsonify({"ok": True, "path": copied_path})
 
 
 @app.post("/notes/move")
@@ -188,6 +205,18 @@ def create_folder():
         )
 
     return redirect(url_for("index"))
+
+
+@app.post("/folders/delete")
+@login_required
+def delete_folder():
+    payload = request.get_json(silent=True) or {}
+    path = str(payload.get("path", "")).strip()
+    try:
+        parent_path = repository.delete_folder(path)
+    except RepositoryError as error:
+        return jsonify({"ok": False, "error": str(error)}), 400
+    return jsonify({"ok": True, "path": parent_path})
 
 
 @app.post("/uploads")
@@ -257,6 +286,12 @@ def assets():
 @login_required
 def api_tree():
     return jsonify(repository.tree())
+
+
+@app.get("/api/tags")
+@login_required
+def api_tags():
+    return jsonify({"tags": all_repository_tags(repository)})
 
 
 @app.get("/api/graph")
@@ -370,13 +405,13 @@ def api_intelligence_recommendations():
         if item.get("source") and item.get("target")
     }
     try:
-        return jsonify(
-            recommend_connections(
-                repository,
-                focus_path=focus_path,
-                rejected_pairs=rejected_pairs,
-            )
+        payload = recommend_connections(
+            repository,
+            focus_path=focus_path,
+            rejected_pairs=rejected_pairs,
         )
+        payload["tag_recommendations"] = recommend_tags_for_note(repository, focus_path)
+        return jsonify(payload)
     except RepositoryError as error:
         return jsonify({"error": str(error)}), 400
 
@@ -409,6 +444,21 @@ def api_intelligence_recommendation_approve():
     except RepositoryError as error:
         return jsonify({"error": str(error)}), 400
 
+    return jsonify({"ok": True, **result})
+
+
+@app.post("/api/intelligence/tags/approve")
+@login_required
+def api_intelligence_tag_approve():
+    payload = request.get_json(silent=True) or {}
+    path = str(payload.get("path", "")).strip()
+    tags = normalize_tags(payload.get("tags", []))
+    if not path or not tags:
+        return jsonify({"error": "Informe nota e tags para aprovar."}), 400
+    try:
+        result = repository.append_tags(path, tags)
+    except RepositoryError as error:
+        return jsonify({"error": str(error)}), 400
     return jsonify({"ok": True, **result})
 
 
@@ -462,8 +512,10 @@ def api_intelligence_write_status(job_id):
 def api_intelligence_write_approve():
     payload = request.get_json(silent=True) or {}
     content = str(payload.get("content", "")).strip()
+    original_content = str(payload.get("original_content", "")).strip()
     title = str(payload.get("title", "")).strip()
     kind = str(payload.get("kind", "")).strip()
+    tags = normalize_tags(payload.get("tags", []))
 
     if not content:
         return jsonify({"error": "Nao ha texto para salvar."}), 400
@@ -471,7 +523,8 @@ def api_intelligence_write_approve():
     try:
         repository.create_folder("Artigos")
         path = next_article_path(repository, title or title_from_content(content), kind)
-        saved_path = repository.write_note(path, approved_article_content(content))
+        saved_path = repository.write_note(path, approved_article_content(content, tags))
+        learning = record_writing_learning(original_content, content, kind=kind, title=title)
     except RepositoryError as error:
         return jsonify({"error": str(error)}), 400
 
@@ -480,6 +533,7 @@ def api_intelligence_write_approve():
             "ok": True,
             "path": saved_path,
             "url": url_for("index", path=saved_path, mode="read"),
+            "learning": learning,
         }
     )
 
@@ -530,8 +584,129 @@ def remove_accents(value: str) -> str:
     return value.translate(replacements)
 
 
-def approved_article_content(content: str) -> str:
-    return f"{content.strip()}\n"
+def approved_article_content(content: str, tags: list[str] | None = None) -> str:
+    base = f"{content.strip()}\n"
+    return append_tags_to_content(base, tags or [])
+
+
+def all_repository_tags(repository: NoteRepository) -> list[str]:
+    tags = set()
+    for path in repository.iter_notes():
+        tags.update(extract_tags(path.read_text(encoding="utf-8")))
+    return sorted(tags)
+
+
+def parse_tag_string(value: str) -> list[str]:
+    return normalize_tags(re.split(r"[\s,]+", value.strip())) if value.strip() else []
+
+
+def recommend_tags_for_note(repository: NoteRepository, relative_path: str, limit: int = 8) -> list[dict]:
+    if not relative_path:
+        return []
+    try:
+        note = repository.read_note(relative_path)
+    except RepositoryError:
+        return []
+    existing = extract_tags(note["content"])
+    related = related_tags_from_similar_notes(repository, note["path"], note["content"], existing, limit=limit)
+    if related:
+        return related
+    return [
+        item
+        for item in recommend_new_tags_from_text(note["content"], limit=limit + len(existing))
+        if item["tag"] not in existing
+    ][:limit]
+
+
+def recommend_tags_for_text(repository: NoteRepository, text: str, limit: int = 8) -> list[dict]:
+    existing = set(extract_tags(text))
+    related = related_tags_from_similar_notes(repository, "", text, existing, limit=limit)
+    if related:
+        return related
+    return recommend_new_tags_from_text(text, limit=limit)
+
+
+def related_tags_from_similar_notes(
+    repository: NoteRepository,
+    current_path: str,
+    text: str,
+    existing_tags: set[str],
+    limit: int,
+) -> list[dict]:
+    text_terms = meaningful_tag_terms(text)
+    scored = []
+    for path in repository.iter_notes():
+        relative = repository.to_relative(path)
+        if relative == current_path:
+            continue
+        content = path.read_text(encoding="utf-8")
+        tags = extract_tags(content) - existing_tags
+        if not tags:
+            continue
+        overlap = len(text_terms & meaningful_tag_terms(content))
+        if overlap < 5:
+            continue
+        for tag in tags:
+            tag_terms = meaningful_tag_terms(tag)
+            topical_score = len(tag_terms & text_terms)
+            if topical_score == 0 and overlap < 7:
+                continue
+            score = overlap + topical_score * 4
+            scored.append((score, tag, f"Tag usada em nota semanticamente proxima: {relative}."))
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    return [{"tag": tag, "score": score, "reason": reason} for score, tag, reason in scored[:limit]]
+
+
+def recommend_new_tags_from_text(text: str, limit: int = 8) -> list[dict]:
+    terms = meaningful_tag_terms(text)
+    phrase_candidates = re.findall(
+        r"\b([A-ZÁÀÃÂÉÊÍÓÔÕÚÇ][A-Za-zÁÀÃÂÉÊÍÓÔÕÚÇáàãâéêíóôõúç0-9]+(?:\s+[A-ZÁÀÃÂÉÊÍÓÔÕÚÇ][A-Za-zÁÀÃÂÉÊÍÓÔÕÚÇáàãâéêíóôõúç0-9]+){1,3})\b",
+        text,
+    )
+    suggestions = []
+    seen = set()
+    for phrase in phrase_candidates:
+        tag = slugify_title(phrase)
+        if tag and tag not in seen:
+            seen.add(tag)
+            suggestions.append({"tag": tag, "score": 3, "reason": "Conceito nomeado aparece no texto."})
+        if len(suggestions) >= limit:
+            return suggestions
+    common = [
+        term
+        for term in sorted(terms)
+        if len(term) >= 6 and not term.isdigit() and term not in STOP_TAG_TERMS
+    ]
+    for term in common:
+        if term not in seen:
+            seen.add(term)
+            suggestions.append({"tag": term, "score": 1, "reason": "Conceito recorrente no texto."})
+        if len(suggestions) >= limit:
+            break
+    return suggestions
+
+
+STOP_TAG_TERMS = {
+    "sobre",
+    "porque",
+    "quando",
+    "texto",
+    "artigo",
+    "forma",
+    "parte",
+    "ponto",
+    "precisa",
+    "relacao",
+    "conteudo",
+}
+
+
+def meaningful_tag_terms(text: str) -> set[str]:
+    return {
+        term
+        for term in re.findall(r"[a-z0-9_\-/]{3,}", remove_accents(text).lower())
+        if term not in STOP_TAG_TERMS and not term.isdigit()
+    }
 
 
 def update_vector_read_job(job_id: str, **changes) -> None:
@@ -600,6 +775,7 @@ def run_writing_job(job_id: str, kind: str, theme: str, focus_path: str) -> None
             focus_path=focus_path,
             progress=progress,
         )
+        result["suggested_tags"] = recommend_tags_for_text(repository, result.get("content", ""), limit=8)
     except Exception as error:  # noqa: BLE001 - background job must surface errors to UI
         update_writing_job(
             job_id,

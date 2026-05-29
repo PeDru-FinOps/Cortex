@@ -4,7 +4,7 @@
   {% if node.type == "folder" %}
     <li>
       <details class="folder-node" data-folder-path="{{ node.path }}" {{ 'open' if node.path == "" or (selected_path and node.path and selected_path.startswith(node.path ~ '/')) else '' }}>
-        <summary class="folder-drop-target" data-folder-path="{{ node.path }}">{{ node.name }}</summary>
+        <summary class="folder-drop-target tree-item" data-tree-type="folder" data-folder-path="{{ node.path }}">{{ node.name }}</summary>
         <ul>
           {% for child in node.children %}
             {{ render_tree(child, selected_path) }}
@@ -14,7 +14,7 @@
     </li>
   {% else %}
     <li>
-      <a class="{{ 'active' if node.path == selected_path else '' }} note-link" draggable="true" data-note-path="{{ node.path }}" href="{{ url_for('index', path=node.path, mode='read') }}">{{ node.name }}</a>
+      <a class="{{ 'active' if node.path == selected_path else '' }} note-link tree-item" draggable="true" data-tree-type="note" data-note-path="{{ node.path }}" href="{{ url_for('index', path=node.path, mode='read') }}">{{ node.name }}</a>
     </li>
   {% endif %}
 {% endmacro %}
@@ -32,12 +32,14 @@
       </div>
     </div>
     <div class="sidebar-actions">
-      <a class="action-link" href="{{ url_for('index', mode='new') }}">Nova nota</a>
-      <button id="sync-vector-store" type="button" data-sync-url="{{ url_for('api_vector_store_sync') }}">Sync</button>
+      <div class="sidebar-iconbar">
+        <a class="action-link icon-action" href="{{ url_for('index', mode='new') }}" title="Nova nota" aria-label="Nova nota">N</a>
+        <button class="icon-action" id="quick-create-folder" type="button" title="Criar pasta" aria-label="Criar pasta">F</button>
+        <button class="icon-action" id="sync-vector-store" type="button" data-sync-url="{{ url_for('api_vector_store_sync') }}" title="Sync" aria-label="Sync">S</button>
+      </div>
       <p id="sync-status" class="sync-status" hidden></p>
-      <form class="folder-form" method="post" action="{{ url_for('create_folder') }}">
+      <form class="folder-form hidden-form" method="post" action="{{ url_for('create_folder') }}">
         <input name="path" placeholder="Nova pasta/subpasta" required>
-        <button type="submit">Criar pasta</button>
       </form>
       {% if folder_error %}
         <p class="error">{{ folder_error }}</p>
@@ -63,6 +65,13 @@
     <nav class="tree">
       <ul>{{ render_tree(tree, selected_path) }}</ul>
     </nav>
+    <div id="tree-context-menu" class="tree-context-menu" hidden>
+      <button type="button" data-tree-action="new-note">Nova nota</button>
+      <button type="button" data-tree-action="new-folder">Nova pasta</button>
+      <button type="button" data-tree-action="copy-note">Copiar nota</button>
+      <button type="button" data-tree-action="delete-note">Apagar nota</button>
+      <button type="button" data-tree-action="delete-folder">Apagar pasta</button>
+    </div>
     <div class="sidebar-resizer" role="separator" aria-orientation="vertical" title="Redimensionar sidebar"></div>
   </aside>
 
@@ -83,6 +92,12 @@
             <input name="path" placeholder="pasta/subpasta/minha-nota.md" value="{{ selected_note.path if selected_note else selected_path }}" required>
             <button type="submit">Salvar</button>
           </div>
+          <input name="tags" list="tag-options" placeholder="#tags adicionais, separadas por espaco ou virgula">
+          <datalist id="tag-options">
+            {% for tag in all_tags or [] %}
+              <option value="#{{ tag }}"></option>
+            {% endfor %}
+          </datalist>
           {% if error %}
             <p class="error">{{ error }}</p>
           {% endif %}

@@ -88,6 +88,29 @@ class RepositoryTest(unittest.TestCase):
             with self.assertRaises(RepositoryError):
                 repository.read_note("nota.md")
 
+    def test_copy_note_creates_unique_copy(self):
+        with tempfile.TemporaryDirectory() as folder:
+            repository = NoteRepository(folder)
+            repository.write_note("area/nota.md", "# Nota")
+
+            first = repository.copy_note("area/nota.md")
+            second = repository.copy_note("area/nota.md")
+
+            self.assertEqual(first, "area/nota - copia.md")
+            self.assertEqual(second, "area/nota - copia 2.md")
+            self.assertEqual(repository.read_note(first)["content"], "# Nota")
+
+    def test_delete_folder_removes_folder(self):
+        with tempfile.TemporaryDirectory() as folder:
+            repository = NoteRepository(folder)
+            repository.write_note("area/nota.md", "# Nota")
+
+            parent = repository.delete_folder("area")
+
+            self.assertEqual(parent, "")
+            with self.assertRaises(RepositoryError):
+                repository.read_note("area/nota.md")
+
     def test_append_note_link_adds_approved_connections_section(self):
         with tempfile.TemporaryDirectory() as folder:
             repository = NoteRepository(folder)
@@ -135,6 +158,24 @@ class RepositoryTest(unittest.TestCase):
 
     def test_approved_article_content_preserves_edited_text(self):
         self.assertEqual(approved_article_content("  Texto editado\n\n"), "Texto editado\n")
+
+    def test_approved_article_content_appends_tags(self):
+        self.assertEqual(
+            approved_article_content("# Artigo", ["FinOps", "#Azure"]),
+            "# Artigo\n\n#finops #azure\n",
+        )
+
+    def test_append_tags_adds_only_new_tags(self):
+        with tempfile.TemporaryDirectory() as folder:
+            repository = NoteRepository(folder)
+            repository.write_note("a.md", "# A\n\n#finops")
+
+            result = repository.append_tags("a.md", ["finops", "azure"])
+            content = repository.read_note("a.md")["content"]
+
+            self.assertTrue(result["changed"])
+            self.assertEqual(result["tags"], ["azure"])
+            self.assertIn("#azure", content)
 
 
 if __name__ == "__main__":
