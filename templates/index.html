@@ -33,6 +33,8 @@
     </div>
     <div class="sidebar-actions">
       <a class="action-link" href="{{ url_for('index', mode='new') }}">Nova nota</a>
+      <button id="sync-vector-store" type="button" data-sync-url="{{ url_for('api_vector_store_sync') }}">Sync</button>
+      <p id="sync-status" class="sync-status" hidden></p>
       <form class="folder-form" method="post" action="{{ url_for('create_folder') }}">
         <input name="path" placeholder="Nova pasta/subpasta" required>
         <button type="submit">Criar pasta</button>
@@ -41,11 +43,11 @@
         <p class="error">{{ folder_error }}</p>
       {% endif %}
       <section class="dropzone" data-upload-url="{{ url_for('upload_notes') }}">
-        <input id="upload-files" type="file" accept=".md,text/markdown" multiple hidden>
-        <input id="upload-folder" type="file" accept=".md,text/markdown" multiple webkitdirectory directory hidden>
+        <input id="upload-files" type="file" accept=".md,text/markdown,image/png,image/jpeg,image/gif,image/webp,image/svg+xml" multiple hidden>
+        <input id="upload-folder" type="file" accept=".md,text/markdown,image/png,image/jpeg,image/gif,image/webp,image/svg+xml" multiple webkitdirectory directory hidden>
         <div class="dropzone-icon">+</div>
         <p>Arraste arquivos aqui</p>
-        <span>Markdown, pastas e subpastas</span>
+        <span>Markdown, imagens, pastas e subpastas</span>
         <div class="dropzone-actions">
           <button type="button" data-upload-picker="files">Arquivos</button>
           <button type="button" data-upload-picker="folder">Pasta</button>
@@ -105,6 +107,9 @@
         </div>
         <div class="tabs">
           <button class="tab active" data-view="reading" type="button">Leitura</button>
+          <button class="tab" data-view="agent" type="button">Chat IA</button>
+          <button class="tab" data-view="intelligence" type="button">Inteligência</button>
+          <button class="tab" data-view="writing" type="button">Escrita</button>
           <button class="tab" data-view="graph" type="button">Grafo</button>
         </div>
         <article id="reading" class="preview view active">
@@ -137,6 +142,52 @@
           </div>
           <canvas id="graph-canvas" aria-label="Grafo de notas"></canvas>
         </div>
+        <section id="agent" class="agent-pane view" data-note-path="{{ selected_note.path if selected_note else '' }}">
+          <div class="agent-query">
+            <textarea id="agent-query-input" placeholder="Converse com o Cortex sobre suas notas. Ex: Que padroes aparecem sobre FinOps e Cloud8?"></textarea>
+            <button id="agent-run" type="button">Enviar</button>
+          </div>
+          <div id="agent-result" class="agent-result">
+            <p>Faça uma pergunta para recuperar contexto, conectar notas e gerar hipóteses.</p>
+          </div>
+        </section>
+        <section id="intelligence" class="intelligence-pane view" data-note-path="{{ selected_note.path if selected_note else '' }}">
+          <div class="intelligence-single">
+            <section class="intelligence-section">
+              <div class="intelligence-header">
+                <h2>Conexões sugeridas</h2>
+                <button id="load-recommendations" type="button">Atualizar</button>
+              </div>
+              <div id="connection-recommendations" class="connection-list">
+                <p class="agent-muted">Carregue sugestões para encontrar relações implícitas entre notas.</p>
+              </div>
+            </section>
+          </div>
+        </section>
+        <section id="writing" class="writing-pane view" data-note-path="{{ selected_note.path if selected_note else '' }}">
+          <div class="writing-layout">
+            <section class="intelligence-section writing-controls">
+              <h2>Escrita com skills</h2>
+              <div class="vector-read-panel">
+                <div>
+                  <strong>Leitura do Vector Store</strong>
+                  <span id="vector-cache-status">Cache ainda nao verificado.</span>
+                </div>
+                <button id="read-vector-store" type="button">Ler Vector</button>
+              </div>
+              <div id="vector-read-progress" class="vector-read-progress" hidden></div>
+              <div class="writing-actions">
+                <button type="button" data-write-kind="linkedin">LinkedIn post</button>
+                <button type="button" data-write-kind="article">Artigo</button>
+                <button type="button" data-write-kind="requested">Solicitado</button>
+              </div>
+              <textarea id="writing-theme" placeholder="Tema opcional. Para Solicitado, descreva o texto que deseja gerar com base no Cortex."></textarea>
+            </section>
+              <section id="writing-result" class="writing-result">
+                <p class="agent-muted">Escolha um tipo de escrita para gerar conteúdo usando as skills salvas no Cortex.</p>
+              </section>
+          </div>
+        </section>
       </section>
     {% endif %}
   </main>

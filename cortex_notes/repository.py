@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 
 class RepositoryError(ValueError):
     pass
+
+
+ALLOWED_ATTACHMENT_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}
+ALLOWED_UPLOAD_EXTENSIONS = {".md"} | ALLOWED_ATTACHMENT_EXTENSIONS
 
 
 class NoteRepository:
@@ -88,20 +93,96 @@ class NoteRepository:
             raise RepositoryError("Nota nao encontrada.")
         path.unlink()
 
+    def append_note_link(self, source_path: str, target_path: str) -> dict[str, str | bool]:
+        source = self.read_note(source_path)
+        target = self.read_note(target_path)
+        link = f"[[{target['title']}]]"
+        content = source["content"]
+        if link in content or f"[[{target['path']}]]" in content:
+            return {"path": source["path"], "link": link, "changed": False}
+
+        content = append_approved_connection_section(content, link)
+
+        self.write_note(source["path"], content)
+        return {"path": source["path"], "link": link, "changed": True}
+
+    def approve_connection(self, source_path: str, target_path: str) -> dict:
+        forward = self.append_note_link(source_path, target_path)
+        reciprocal = self.append_note_link(target_path, source_path)
+        return {
+            "source": forward,
+            "target": reciprocal,
+            "changed": bool(forward["changed"] or reciprocal["changed"]),
+        }
+
     def import_note_stream(self, relative_path: str, stream) -> str:
         path = self.resolve_upload_path(relative_path)
+        if path.suffix.lower() != ".md":
+            raise RepositoryError(f"Apenas arquivos .md sao aceitos: {relative_path}")
+        return self.import_file_stream(relative_path, stream)
+
+    def import_file_stream(self, relative_path: str, stream) -> str:
+        path = self.resolve_upload_path(relative_path)
         data = stream.read()
+
+        if path.suffix.lower() == ".md":
+            if isinstance(data, str):
+                content = data
+            else:
+                try:
+                    content = data.decode("utf-8-sig")
+                except UnicodeDecodeError as error:
+                    raise RepositoryError(f"{relative_path} nao esta em UTF-8.") from error
+
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+            return self.to_relative(path)
+
         if isinstance(data, str):
-            content = data
-        else:
-            try:
-                content = data.decode("utf-8-sig")
-            except UnicodeDecodeError as error:
-                raise RepositoryError(f"{relative_path} nao esta em UTF-8.") from error
+            data = data.encode("utf-8")
 
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
+        path.write_bytes(data)
         return self.to_relative(path)
+
+    def resolve_asset_path(self, relative_path: str) -> Path:
+        path = self.resolve_upload_path(relative_path)
+        if path.suffix.lower() not in ALLOWED_ATTACHMENT_EXTENSIONS:
+            raise RepositoryError("Arquivo nao suportado como imagem.")
+        if not path.exists() or not path.is_file():
+            raise RepositoryError("Imagem nao encontrada.")
+        return path
+
+    def find_attachment(self, target: str, current_note_path: str = "") -> str | None:
+        normalized = target.strip().replace("\\", "/")
+        if not normalized:
+            return None
+
+        candidates = []
+        if current_note_path:
+            note_folder = Path(current_note_path).parent.as_posix()
+            if note_folder and note_folder != ".":
+                candidates.append(f"{note_folder}/{normalized}")
+        candidates.append(normalized)
+
+        for candidate in candidates:
+            try:
+                path = self.resolve_asset_path(candidate)
+            except RepositoryError:
+                continue
+            return self.to_relative(path)
+
+        filename = Path(normalized).name.lower()
+        matches = [
+            path
+            for path in self.root.rglob("*")
+            if path.is_file()
+            and path.suffix.lower() in ALLOWED_ATTACHMENT_EXTENSIONS
+            and path.name.lower() == filename
+        ]
+        if len(matches) == 1:
+            return self.to_relative(matches[0])
+        return None
 
     def resolve_upload_path(self, relative_path: str) -> Path:
         normalized = relative_path.strip().replace("\\", "/")
@@ -111,8 +192,8 @@ class NoteRepository:
         path_parts = Path(normalized).parts
         if normalized.startswith("/") or Path(normalized).drive or ".." in path_parts:
             raise RepositoryError(f"Caminho invalido no upload: {relative_path}")
-        if Path(normalized).suffix.lower() != ".md":
-            raise RepositoryError(f"Apenas arquivos .md sao aceitos: {relative_path}")
+        if Path(normalized).suffix.lower() not in ALLOWED_UPLOAD_EXTENSIONS:
+            raise RepositoryError(f"Arquivo nao suportado: {relative_path}")
 
         path = (self.root / normalized).resolve()
         if self.root != path and self.root not in path.parents:
@@ -160,3 +241,12 @@ class NoteRepository:
             "path": "" if folder == self.root else self.to_relative(folder),
             "children": children,
         }
+
+
+def append_approved_connection_section(content: str, link: str) -> str:
+    section_pattern = re.compile(r"^## Conex(?:o|õ)es aprovadas\s*$", re.IGNORECASE | re.MULTILINE)
+    if section_pattern.search(content):
+        return f"{content.rstrip()}\n- {link}\n"
+
+    separator = "\n\n" if content.strip() else ""
+    return f"{content.rstrip()}{separator}## Conexoes aprovadas\n\n- {link}\n"

@@ -10,10 +10,33 @@ import markdown
 from cortex_notes.graph import TAG_PATTERN, WIKI_LINK_PATTERN, resolve_wiki_link
 
 
-def render_markdown(content: str, note_lookup: dict[str, str]) -> str:
-    prepared = replace_wiki_links(content, note_lookup)
+IMAGE_WIKI_LINK_PATTERN = re.compile(r"!\[\[([^\]]+)\]\]")
+
+
+def render_markdown(
+    content: str,
+    note_lookup: dict[str, str],
+    image_resolver=None,
+) -> str:
+    prepared = replace_wiki_images(content, image_resolver)
+    prepared = replace_wiki_links(prepared, note_lookup)
     prepared = replace_tags(prepared)
     return markdown.markdown(prepared, extensions=["fenced_code", "tables", "toc"])
+
+
+def replace_wiki_images(content: str, image_resolver=None) -> str:
+    def replacement(match: re.Match) -> str:
+        raw = match.group(1)
+        target_name, label = split_wiki_link(raw)
+        safe_label = html.escape(label)
+        asset_path = image_resolver(target_name) if image_resolver else None
+        if not asset_path:
+            return f'<span class="image-missing">{safe_label}</span>'
+
+        src = f"/assets?path={quote(asset_path)}"
+        return f'<img class="note-image" src="{src}" alt="{safe_label}">'
+
+    return IMAGE_WIKI_LINK_PATTERN.sub(replacement, content)
 
 
 def replace_wiki_links(content: str, note_lookup: dict[str, str]) -> str:

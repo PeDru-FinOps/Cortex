@@ -5,6 +5,9 @@ const appShell = document.querySelector(".app-shell");
 setupSidebar();
 setupTreeDragAndDrop();
 setupConfirmForms();
+setupVectorStoreSync();
+setupAgent();
+setupIntelligence();
 loadLocalGraph();
 
 tabs.forEach((tab) => {
@@ -24,7 +27,9 @@ function setupSidebar() {
   const toggles = document.querySelectorAll(".sidebar-toggle");
   const resizer = document.querySelector(".sidebar-resizer");
   const storedWidth = localStorage.getItem("cortex.sidebarWidth");
-  const collapsed = localStorage.getItem("cortex.sidebarCollapsed") === "1";
+  const storedCollapsed = localStorage.getItem("cortex.sidebarCollapsed");
+  const mobile = window.matchMedia("(max-width: 760px)").matches;
+  const collapsed = storedCollapsed === null ? mobile : storedCollapsed === "1";
 
   if (storedWidth) {
     setSidebarWidth(Number(storedWidth));
@@ -37,6 +42,14 @@ function setupSidebar() {
       appShell.classList.toggle("sidebar-collapsed", nextCollapsed);
       localStorage.setItem("cortex.sidebarCollapsed", nextCollapsed ? "1" : "0");
       setTimeout(() => currentGraphRender?.(), 80);
+    });
+  });
+
+  document.querySelectorAll(".note-link").forEach((link) => {
+    link.addEventListener("click", () => {
+      if (!window.matchMedia("(max-width: 760px)").matches) return;
+      appShell.classList.add("sidebar-collapsed");
+      localStorage.setItem("cortex.sidebarCollapsed", "1");
     });
   });
 
@@ -61,6 +74,676 @@ function setupSidebar() {
     window.addEventListener("mousemove", onMouseMove);
     window.addEventListener("mouseup", onMouseUp);
   });
+}
+
+function setupAgent() {
+  const pane = document.getElementById("agent");
+  const button = document.getElementById("agent-run");
+  const input = document.getElementById("agent-query-input");
+  const result = document.getElementById("agent-result");
+  if (!pane || !button || !input || !result) return;
+
+  button.addEventListener("click", async () => {
+    const message = input.value.trim();
+    button.disabled = true;
+    button.textContent = "Pensando...";
+    result.innerHTML = '<p class="agent-muted">Recuperando contexto, cruzando notas e consultando a LLM quando configurada...</p>';
+
+    try {
+      const response = await fetch("/api/agent/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message,
+          path: pane.dataset.notePath || "",
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || "Nao foi possivel gerar insights.");
+      }
+      result.innerHTML = renderAgentResult(data);
+    } catch (error) {
+      result.innerHTML = `<p class="error">${escapeHtml(error.message)}</p>`;
+    } finally {
+      button.disabled = false;
+      button.textContent = "Enviar";
+    }
+  });
+}
+
+function setupVectorStoreSync() {
+  const button = document.getElementById("sync-vector-store");
+  const status = document.getElementById("sync-status");
+  if (!button || !status) return;
+
+  button.addEventListener("click", async () => {
+    button.disabled = true;
+    button.textContent = "Sync...";
+    status.hidden = false;
+    status.classList.remove("error", "success");
+    status.textContent = "Sincronizando notas com o OpenAI Vector Store.";
+
+    try {
+      const response = await fetch(button.dataset.syncUrl, { method: "POST" });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || "Nao foi possivel sincronizar.");
+      }
+      status.classList.add(data.failed?.length ? "error" : "success");
+      status.textContent = syncSummaryText(data);
+    } catch (error) {
+      status.classList.add("error");
+      status.textContent = error.message;
+    } finally {
+      button.disabled = false;
+      button.textContent = "Sync";
+    }
+  });
+}
+
+function setupIntelligence() {
+  const pane = document.getElementById("intelligence");
+  const writingPane = document.getElementById("writing");
+  if (!pane && !writingPane) return;
+
+  const loadButton = document.getElementById("load-recommendations");
+  const recommendationBox = document.getElementById("connection-recommendations");
+  const writingTheme = document.getElementById("writing-theme");
+  const writingResult = document.getElementById("writing-result");
+  const readVectorButton = document.getElementById("read-vector-store");
+  const vectorProgress = document.getElementById("vector-read-progress");
+  const cacheStatus = document.getElementById("vector-cache-status");
+
+  refreshVectorCacheStatus(cacheStatus);
+
+  readVectorButton?.addEventListener("click", async () => {
+    readVectorButton.disabled = true;
+    vectorProgress.hidden = false;
+    vectorProgress.innerHTML = renderVectorReadProgress({
+      phase: "starting",
+      message: "Iniciando leitura do Vector Store.",
+      percent: 0,
+      completed: 0,
+      total: 0,
+    });
+    try {
+      const response = await fetch("/api/vector-store/read", { method: "POST" });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Nao foi possivel iniciar a leitura do Vector Store.");
+      await watchVectorReadJob(data.job_id, vectorProgress, cacheStatus);
+    } catch (error) {
+      vectorProgress.innerHTML = `<p class="error">${escapeHtml(error.message)}</p>`;
+    } finally {
+      readVectorButton.disabled = false;
+    }
+  });
+
+  loadButton?.addEventListener("click", async () => {
+    loadButton.disabled = true;
+    loadButton.textContent = "Analisando...";
+    recommendationBox.innerHTML = '<p class="agent-muted">Cruzando notas e detectando relações implícitas...</p>';
+    try {
+      const notePath = encodeURIComponent(pane?.dataset.notePath || "");
+      const response = await fetch(`/api/intelligence/recommendations?path=${notePath}`);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Nao foi possivel carregar recomendacoes.");
+      recommendationBox.innerHTML = renderConnectionRecommendations(data.recommendations || []);
+    } catch (error) {
+      recommendationBox.innerHTML = `<p class="error">${escapeHtml(error.message)}</p>`;
+    } finally {
+      loadButton.disabled = false;
+      loadButton.textContent = "Atualizar";
+    }
+  });
+
+  recommendationBox?.addEventListener("click", async (event) => {
+    const approveButton = event.target.closest("[data-approve-connection]");
+    if (approveButton) {
+      await handleConnectionDecision(approveButton, "/api/intelligence/recommendations/approve", "Aprovando...", "Aprovar");
+      return;
+    }
+
+    const button = event.target.closest("[data-reject-connection]");
+    if (!button) return;
+
+    await handleConnectionDecision(button, "/api/intelligence/recommendations/reject", "Rejeitando...", "Rejeitar", {
+      reason: "Rejeitada pela interface",
+    });
+  });
+
+  document.querySelectorAll("[data-write-kind]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const kind = button.dataset.writeKind;
+      button.disabled = true;
+      writingResult.innerHTML = renderWritingProgress({
+        phase: "starting",
+        message: "Enviando pedido para o servidor.",
+        elapsed_seconds: 0,
+      });
+      try {
+        const response = await fetch("/api/intelligence/write", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            kind,
+            theme: writingTheme?.value || "",
+            path: writingPane?.dataset.notePath || "",
+          }),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "Nao foi possivel gerar o texto.");
+        await watchWritingJob(data.job_id, writingResult);
+      } catch (error) {
+        writingResult.innerHTML = `<p class="error">${escapeHtml(error.message)}</p>`;
+      } finally {
+        button.disabled = false;
+      }
+    });
+  });
+
+  writingResult?.addEventListener("click", async (event) => {
+    const copyButton = event.target.closest("[data-copy-writing]");
+    if (copyButton) {
+      try {
+        await navigator.clipboard.writeText(readWritingMainText(writingResult));
+        temporarilyRenameButton(copyButton, "Copiado");
+      } catch {
+        window.alert("Nao foi possivel copiar automaticamente.");
+      }
+      return;
+    }
+
+    const editButton = event.target.closest("[data-edit-writing]");
+    if (editButton) {
+      toggleWritingEditor(writingResult, editButton);
+      return;
+    }
+
+    const approveButton = event.target.closest("[data-approve-writing]");
+    if (approveButton) {
+      await approveWritingSuggestion(writingResult, approveButton);
+    }
+  });
+}
+
+async function refreshVectorCacheStatus(container) {
+  if (!container) return;
+  try {
+    const response = await fetch("/api/vector-store/cache");
+    const data = await response.json();
+    if (!data.available) {
+      container.textContent = "Sem cache lido. A escrita usara fallback local.";
+      return;
+    }
+    const date = data.created_at ? new Date(data.created_at * 1000).toLocaleString() : "data desconhecida";
+    const usable = Number(data.documents_with_text || 0);
+    const errors = Number(data.documents_with_errors || 0);
+    if (!data.usable) {
+      container.textContent = `${data.document_count} arquivo(s) registrados, mas 0 com texto utilizavel. Releia o Vector Store. Atualizado em ${date}.`;
+      return;
+    }
+    const errorText = errors ? ` ${errors} sem trecho recuperado.` : "";
+    container.textContent = `${usable}/${data.document_count} arquivo(s) com trechos em cache. Atualizado em ${date}.${errorText}`;
+  } catch {
+    container.textContent = "Nao foi possivel verificar o cache.";
+  }
+}
+
+async function watchVectorReadJob(jobId, container, cacheStatus) {
+  if (!jobId) throw new Error("Servidor nao retornou o identificador da leitura.");
+
+  while (true) {
+    const response = await fetch(`/api/vector-store/read/${encodeURIComponent(jobId)}`);
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Nao foi possivel consultar a leitura do Vector Store.");
+
+    if (data.status === "done") {
+      container.innerHTML = renderVectorReadProgress(data);
+      await refreshVectorCacheStatus(cacheStatus);
+      return;
+    }
+
+    if (data.status === "error") {
+      container.innerHTML = `
+        ${renderVectorReadProgress(data)}
+        <p class="error">${escapeHtml(data.error || "A leitura falhou.")}</p>
+      `;
+      return;
+    }
+
+    container.innerHTML = renderVectorReadProgress(data);
+    await sleep(1800);
+  }
+}
+
+function renderVectorReadProgress(job) {
+  const percent = Number(job.percent || 0);
+  return `
+    <section class="vector-progress-card">
+      <div class="vector-progress-header">
+        <strong>${escapeHtml(vectorReadPhaseLabel(job.phase))}</strong>
+        <span>${escapeHtml(job.message || "Lendo Vector Store.")}</span>
+      </div>
+      <div class="progress-track">
+        <div class="progress-bar" style="width: ${Math.max(0, Math.min(100, percent))}%"></div>
+      </div>
+      <small>${escapeHtml(String(job.completed || 0))}/${escapeHtml(String(job.total || 0))} arquivos · ${escapeHtml(String(percent))}% · ${escapeHtml(String(job.elapsed_seconds || 0))}s decorridos</small>
+    </section>
+  `;
+}
+
+function vectorReadPhaseLabel(phase) {
+  const labels = {
+    queued: "Na fila",
+    starting: "Inicializando",
+    listing: "Listando arquivos",
+    metadata: "Mapeando arquivos",
+    reading: "Lendo arquivos",
+    searching: "Consultando RAG",
+    cached: "Cache reutilizado",
+    done: "Cache atualizado",
+    error: "Erro",
+  };
+  return labels[phase] || "Lendo Vector Store";
+}
+
+async function watchWritingJob(jobId, container) {
+  if (!jobId) throw new Error("Servidor nao retornou o identificador da geracao.");
+
+  while (true) {
+    const response = await fetch(`/api/intelligence/write/${encodeURIComponent(jobId)}`);
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Nao foi possivel consultar o status da geracao.");
+
+    if (data.status === "done") {
+      container.innerHTML = renderWritingResultV2(data.result);
+      return;
+    }
+
+    if (data.status === "error") {
+      container.innerHTML = `
+        ${renderWritingProgress(data)}
+        <p class="error">${escapeHtml(data.error || "A geracao falhou.")}</p>
+      `;
+      return;
+    }
+
+    container.innerHTML = renderWritingProgress(data);
+    await sleep(1800);
+  }
+}
+
+function renderWritingProgress(job) {
+  return `
+    <section class="writing-progress">
+      <div class="progress-spinner" aria-hidden="true"></div>
+      <div>
+        <strong>${escapeHtml(progressPhaseLabel(job.phase))}</strong>
+        <span>${escapeHtml(job.message || "Processando.")}</span>
+        <small>${escapeHtml(String(job.elapsed_seconds || 0))}s decorridos · ${escapeHtml(String(job.seconds_since_update || 0))}s sem nova etapa</small>
+      </div>
+    </section>
+  `;
+}
+
+function progressPhaseLabel(phase) {
+  const labels = {
+    queued: "Na fila",
+    starting: "Inicializando",
+    retrieving: "Recuperando contexto",
+    skill: "Carregando skill",
+    reading_cache: "Lendo cache",
+    llm: "Escrevendo com IA",
+    fallback: "Fallback local",
+    done: "Concluido",
+    error: "Erro",
+  };
+  return labels[phase] || "Processando";
+}
+
+function sleep(milliseconds) {
+  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+}
+
+async function handleConnectionDecision(button, url, loadingText, fallbackText, extraPayload = {}) {
+  const recommendationBox = document.getElementById("connection-recommendations");
+  button.disabled = true;
+  button.textContent = loadingText;
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        source: button.dataset.source,
+        target: button.dataset.target,
+        ...extraPayload,
+      }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Nao foi possivel processar a conexao.");
+    button.closest(".connection-card")?.remove();
+    const status = document.createElement("p");
+    status.className = "success";
+    status.textContent = url.includes("approve")
+      ? "Conexao aprovada e adicionada nas duas notas."
+      : "Conexao rejeitada.";
+    recommendationBox.prepend(status);
+    if (!recommendationBox.querySelector(".connection-card")) {
+      recommendationBox.insertAdjacentHTML("beforeend", '<p class="agent-muted">Nenhuma conexao pendente neste contexto.</p>');
+    }
+  } catch (error) {
+    window.alert(error.message);
+    button.disabled = false;
+    button.textContent = fallbackText;
+  }
+}
+
+function renderConnectionRecommendations(items) {
+  if (!items.length) {
+    return '<p class="agent-muted">Nenhuma conexao nova encontrada para este contexto.</p>';
+  }
+  return items.map((item) => {
+    const analysis = item.analysis ? `<span>${escapeHtml(item.analysis)}</span>` : "";
+    const connectionType = item.connection_type ? `<span>Tipo: ${escapeHtml(item.connection_type)}</span>` : "";
+    return `
+      <article class="connection-card">
+        <strong>${escapeHtml(item.source)} -> ${escapeHtml(item.target)}</strong>
+        <span>${escapeHtml(item.reason)}</span>
+        ${analysis}
+        <div class="connection-meta">
+          <span>Confianca: ${escapeHtml(item.metadata?.confidence || "baixa")}</span>
+          <span>Score: ${escapeHtml(String(item.score))}</span>
+          ${connectionType}
+          <span>${escapeHtml(item.metadata?.recommended_link || "")}</span>
+        </div>
+        <div class="connection-actions">
+          <button type="button" data-approve-connection data-source="${escapeHtml(item.source)}" data-target="${escapeHtml(item.target)}">Aprovar</button>
+          <button class="secondary-button" type="button" data-reject-connection data-source="${escapeHtml(item.source)}" data-target="${escapeHtml(item.target)}">Rejeitar</button>
+        </div>
+      </article>
+    `;
+  }).join("");
+}
+
+function renderWritingResult(data) {
+  return `
+    <section class="agent-answer writing-output">
+      <div class="agent-provider">${escapeHtml(providerLabel(data.llm))} · ${escapeHtml(data.skill || "skill local")}</div>
+      <p>${formatMultiline(data.content || "")}</p>
+    </section>
+    ${renderAgentCards("Base usada", data.context, (item) => `
+      <strong>${escapeHtml(item.path)}</strong>
+      <span>${escapeHtml(item.excerpt)}</span>
+    `)}
+  `;
+}
+
+function renderWritingResultV2(data) {
+  const parsed = parseWritingContent(data.content || "");
+  const mainText = parsed.main?.content || data.content || "";
+  const supportSections = parsed.sections.filter((section) => section !== parsed.main && !isBaseUsedSection(section.title));
+  return `
+    <section class="writing-package" data-writing-kind="${escapeHtml(data.kind || "")}" data-writing-theme="${escapeHtml(data.theme || "")}">
+      <div class="writing-package-header">
+        <div>
+          <span class="agent-provider">${escapeHtml(providerLabel(data.llm))} - ${escapeHtml(data.skill || "skill local")}</span>
+          <h2>${escapeHtml(writingMainLabel(data.kind))}</h2>
+        </div>
+        <div class="writing-package-actions">
+          <button type="button" data-copy-writing>Copiar</button>
+          <button class="secondary-button" type="button" data-edit-writing>Editar</button>
+          <button type="button" data-approve-writing>Aprovar e salvar</button>
+        </div>
+      </div>
+      <article class="writing-main">
+        <p class="writing-main-text">${formatMultiline(mainText)}</p>
+        <textarea class="writing-editor" hidden>${escapeHtml(mainText)}</textarea>
+      </article>
+    </section>
+    ${renderWritingSupportSections(supportSections)}
+    ${renderAgentCards("Base usada", data.context, (item) => `
+      <strong>${escapeHtml(item.path)}</strong>
+      <span>${escapeHtml(item.excerpt)}</span>
+    `)}
+  `;
+}
+
+function parseWritingContent(content) {
+  const sections = [];
+  const headingPattern = /^##\s+(?:\d+\.\s+)?(.+)$/gm;
+  const matches = [...content.matchAll(headingPattern)];
+  if (!matches.length) {
+    return {
+      main: { title: "Postagem completa", content },
+      sections: [{ title: "Postagem completa", content }],
+    };
+  }
+
+  matches.forEach((match, index) => {
+    const start = match.index + match[0].length;
+    const end = matches[index + 1]?.index ?? content.length;
+    sections.push({
+      title: match[1].trim(),
+      content: content.slice(start, end).replace(/^[-\s]+/, "").trim(),
+    });
+  });
+
+  const main = sections.find((section) => normalizeSectionTitle(section.title).includes("postagem completa"))
+    || sections.find((section) => normalizeSectionTitle(section.title).includes("artigo completo"))
+    || sections.find((section) => normalizeSectionTitle(section.title).includes("texto completo"))
+    || sections[0];
+
+  return { main, sections };
+}
+
+function renderWritingSupportSections(sections) {
+  if (!sections.length) return "";
+  const primaryTitles = new Set([
+    "objetivo da postagem",
+    "percepcao desejada",
+    "publico-alvo",
+    "tema principal",
+    "hook alternativo",
+    "cta sugerido",
+  ]);
+  const primary = sections.filter((section) => primaryTitles.has(normalizeSectionTitle(section.title)));
+  const secondary = sections.filter((section) => !primaryTitles.has(normalizeSectionTitle(section.title)));
+  return `
+    ${primary.length ? `
+      <section class="writing-support-grid">
+        ${primary.map(renderWritingSupportCard).join("")}
+      </section>
+    ` : ""}
+    ${secondary.length ? `
+      <section class="writing-support-list">
+        ${secondary.map(renderWritingSupportCard).join("")}
+      </section>
+    ` : ""}
+  `;
+}
+
+function renderWritingSupportCard(section) {
+  return `
+    <article class="writing-support-card">
+      <h3>${escapeHtml(section.title)}</h3>
+      <p>${formatMultiline(section.content)}</p>
+    </article>
+  `;
+}
+
+function normalizeSectionTitle(title) {
+  return title
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
+}
+
+function isBaseUsedSection(title) {
+  return normalizeSectionTitle(title).includes("base usada");
+}
+
+function writingMainLabel(kind) {
+  if (kind === "article") return "Artigo pronto";
+  if (kind === "requested") return "Texto pronto";
+  return "Postagem pronta";
+}
+
+function readWritingMainText(container) {
+  const editor = container.querySelector(".writing-editor");
+  if (editor && !editor.hidden) return editor.value.trim();
+  const text = container.querySelector(".writing-main-text");
+  return text?.textContent.trim() || "";
+}
+
+function toggleWritingEditor(container, button) {
+  const editor = container.querySelector(".writing-editor");
+  const text = container.querySelector(".writing-main-text");
+  if (!editor || !text) return;
+  const editing = editor.hidden;
+  if (editing) {
+    editor.value = text.textContent.trim();
+    editor.hidden = false;
+    text.hidden = true;
+    button.textContent = "Concluir edicao";
+    editor.focus();
+    return;
+  }
+  text.innerHTML = formatMultiline(editor.value.trim());
+  text.hidden = false;
+  editor.hidden = true;
+  button.textContent = "Editar";
+}
+
+async function approveWritingSuggestion(container, button) {
+  const packageElement = container.querySelector(".writing-package");
+  const content = readWritingMainText(container);
+  if (!content) {
+    window.alert("Nao ha texto para salvar.");
+    return;
+  }
+
+  button.disabled = true;
+  const previousText = button.textContent;
+  button.textContent = "Salvando...";
+  try {
+    const response = await fetch("/api/intelligence/write/approve", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        content,
+        kind: packageElement?.dataset.writingKind || "",
+        title: packageElement?.dataset.writingTheme || titleFromText(content),
+      }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Nao foi possivel salvar o texto.");
+    button.textContent = "Salvo";
+    const status = document.createElement("p");
+    status.className = "success";
+    status.innerHTML = `Texto salvo em <a href="${escapeHtml(data.url)}">${escapeHtml(data.path)}</a>.`;
+    packageElement.insertAdjacentElement("afterend", status);
+  } catch (error) {
+    window.alert(error.message);
+    button.disabled = false;
+    button.textContent = previousText;
+  }
+}
+
+function titleFromText(content) {
+  const firstLine = content.split("\n").map((line) => line.trim().replace(/^#+\s*/, "")).find(Boolean);
+  return firstLine || "Texto gerado";
+}
+
+function temporarilyRenameButton(button, label) {
+  const previousText = button.textContent;
+  button.textContent = label;
+  window.setTimeout(() => {
+    button.textContent = previousText;
+  }, 1400);
+}
+
+function syncSummaryText(data) {
+  const parts = [
+    `${data.uploaded?.length || 0} novos`,
+    `${data.updated?.length || 0} atualizados`,
+    `${data.deleted?.length || 0} removidos`,
+    `${data.skipped?.length || 0} sem mudancas`,
+  ];
+  if (data.failed?.length) {
+    parts.push(`${data.failed.length} falhas`);
+  }
+  return `Sync concluido: ${parts.join(", ")}.`;
+}
+
+function renderAgentResult(data) {
+  return `
+    <section class="agent-answer">
+      <div class="agent-provider">${escapeHtml(providerLabel(data.llm))}</div>
+      <p>${formatMultiline(data.answer || data.synthesis || "")}</p>
+    </section>
+    <section class="agent-section">
+      <h2>Síntese local</h2>
+      <p>${escapeHtml(data.synthesis || "")}</p>
+    </section>
+    ${renderAgentCards("Padrões", data.patterns, (item) => `<strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(item.detail)}</span>`)}
+    ${renderAgentCards("Relações implícitas", data.implicit_relations, (item) => `
+      <strong>${escapeHtml(item.source)} -> ${escapeHtml(item.target)}</strong>
+      <span>${escapeHtml(item.reason)} Afinidade ${escapeHtml(String(item.score))}.</span>
+    `)}
+    ${renderAgentList("Hipóteses", data.hypotheses)}
+    ${renderAgentList("Próximas perguntas", data.next_questions)}
+    ${renderAgentCards("Contexto recuperado", data.context, (item) => `
+      <strong>${escapeHtml(item.path)}</strong>
+      <span>${escapeHtml(item.source || "local")} · score ${escapeHtml(String(item.score))}</span>
+      <span>${escapeHtml(item.excerpt)}</span>
+    `)}
+  `;
+}
+
+function providerLabel(llm) {
+  if (!llm) return "Modo local";
+  if (llm.enabled && llm.vector_store) return `OpenAI · ${llm.model} · Vector Store ${llm.vector_store}`;
+  if (llm.enabled) return `OpenAI · ${llm.model}`;
+  return `Fallback local · ${llm.reason || llm.model || "sem LLM"}`;
+}
+
+function formatMultiline(value) {
+  return escapeHtml(value).replaceAll("\n", "<br>");
+}
+
+function renderAgentCards(title, items, renderItem) {
+  if (!items || !items.length) return "";
+  return `
+    <section class="agent-section">
+      <h2>${escapeHtml(title)}</h2>
+      <div class="agent-card-grid">
+        ${items.map((item) => `<article class="agent-card">${renderItem(item)}</article>`).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function renderAgentList(title, items) {
+  if (!items || !items.length) return "";
+  return `
+    <section class="agent-section">
+      <h2>${escapeHtml(title)}</h2>
+      <ul class="agent-list">
+        ${items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}
+      </ul>
+    </section>
+  `;
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
 }
 
 function setupConfirmForms() {
@@ -178,11 +861,11 @@ if (dropzone && fileInput && folderInput) {
 }
 
 async function uploadFiles(files) {
-  const markdownFiles = files.filter((file) => file.name.toLowerCase().endsWith(".md"));
-  if (!markdownFiles.length) return;
+  const supportedFiles = files.filter((file) => isSupportedUpload(file.name));
+  if (!supportedFiles.length) return;
 
   const formData = new FormData();
-  markdownFiles.forEach((file) => {
+  supportedFiles.forEach((file) => {
     const relativePath = file.relativePath || file.webkitRelativePath || file.name;
     formData.append("files", file, relativePath);
   });
@@ -198,6 +881,10 @@ async function uploadFiles(files) {
   }
 
   window.location.reload();
+}
+
+function isSupportedUpload(name) {
+  return /\.(md|png|jpe?g|gif|webp|svg)$/i.test(name);
 }
 
 async function collectDroppedFiles(dataTransfer) {
@@ -272,8 +959,9 @@ function renderLocalGraph(canvas, graph) {
   const context = canvas.getContext("2d");
   const rect = canvas.getBoundingClientRect();
   const ratio = window.devicePixelRatio || 1;
-  const width = Math.max(520, rect.width || 720);
-  const height = 320;
+  const minCanvasWidth = window.matchMedia("(max-width: 760px)").matches ? 280 : 520;
+  const width = Math.max(minCanvasWidth, rect.width || 720);
+  const height = window.matchMedia("(max-width: 760px)").matches ? 260 : 320;
   canvas.width = width * ratio;
   canvas.height = height * ratio;
   canvas.style.width = `${width}px`;
@@ -533,8 +1221,9 @@ function renderGraph(graph) {
   function resizeCanvas() {
     const rect = graphBox.getBoundingClientRect();
     const ratio = window.devicePixelRatio || 1;
-    const screenWidth = Math.max(640, rect.width);
-    const screenHeight = Math.max(680, rect.height);
+    const mobile = window.matchMedia("(max-width: 760px)").matches;
+    const screenWidth = Math.max(mobile ? 300 : 640, rect.width);
+    const screenHeight = Math.max(mobile ? 520 : 680, rect.height);
     canvas.width = screenWidth * ratio;
     canvas.height = screenHeight * ratio;
     canvas.style.width = `${screenWidth}px`;

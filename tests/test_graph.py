@@ -40,6 +40,22 @@ class GraphTest(unittest.TestCase):
         self.assertIn('class="wiki-link"', html)
         self.assertIn("Cloud8/Funcionalidades/Untagged.md", html)
 
+    def test_markdown_renders_obsidian_image_links(self):
+        html = render_markdown(
+            "![[Pasted image 1.png]]",
+            {},
+            image_resolver=lambda target: "assets/Pasted image 1.png",
+        )
+
+        self.assertIn('class="note-image"', html)
+        self.assertIn("/assets?path=assets/Pasted%20image%201.png", html)
+
+    def test_markdown_marks_missing_obsidian_image_links(self):
+        html = render_markdown("![[Pasted image 1.png]]", {}, image_resolver=lambda target: None)
+
+        self.assertIn('class="image-missing"', html)
+        self.assertNotIn('class="wiki-link"', html)
+
     def test_build_local_graph_keeps_only_direct_connections(self):
         with tempfile.TemporaryDirectory() as folder:
             repository = NoteRepository(folder)
